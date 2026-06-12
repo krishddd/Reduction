@@ -52,3 +52,20 @@ def test_is_uniform_array_rejects_nested_values():
     assert not toon.is_uniform_array([{"a": {"b": 1}}])
     assert not toon.is_uniform_array([])
     assert not toon.is_uniform_array("not a list")
+
+
+def test_scalar_array_inline():
+    out = toon.encode({"tags": ["a", "b", "c"]})
+    assert out == "tags[3]: a,b,c"
+
+
+def test_scalar_array_at_top_level_via_field():
+    out = toon.encode({"ids": [1, 2, 3]})
+    assert out == "ids[3]: 1,2,3"
+
+
+def test_is_scalar_array():
+    assert toon.is_scalar_array([1, 2, 3])
+    assert toon.is_scalar_array(["a", "b"])
+    assert not toon.is_scalar_array([{"a": 1}])
+    assert not toon.is_scalar_array([])

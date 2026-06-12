@@ -33,6 +33,13 @@ def is_uniform_array(value: Any) -> bool:
     return True
 
 
+def is_scalar_array(value: Any) -> bool:
+    """True when value is a non-empty list of plain scalars (no dict/list)."""
+    if not isinstance(value, list) or not value:
+        return False
+    return all(not isinstance(v, dict | list) for v in value)
+
+
 def _scalar(value: Any) -> str:
     if value is None:
         return "null"
@@ -65,8 +72,11 @@ def _encode_value(name: str, value: Any, depth: int) -> list[str]:
         for key, val in value.items():
             lines.extend(_encode_value(key, val, depth + 1))
         return lines
+    if is_scalar_array(value):
+        # Inline CSV row: ``tags[3]: a,b,c`` — no per-item key repetition.
+        return [f"{pad}{name}[{len(value)}]: {','.join(_scalar(v) for v in value)}"]
     if isinstance(value, list):
-        # Non-uniform array — compact JSON is more token-efficient here.
+        # Non-uniform / nested array — compact JSON is more token-efficient.
         return [f"{pad}{name}: {json.dumps(value, separators=(',', ':'))}"]
     return [f"{pad}{name}: {_scalar(value)}"]
 

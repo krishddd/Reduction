@@ -8,8 +8,15 @@ version = "0.1.0"
 description = "Five-layer token-optimization pipeline for AI agents — optimize every input and output"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 keywords = ["llm", "tokens", "cost", "agents", "caching", "compression"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "pydantic>=2.7",
 ]
@@ -24,19 +31,29 @@ gateway = [
 compress = [
     "llmlingua>=0.2.2",   # Layer 2 — heavy (pulls torch); install only where needed
 ]
+tokenizer = [
+    "tiktoken>=0.7",      # accurate token counts in metrics (else char heuristic)
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "httpx>=0.27",
     "fastapi>=0.115",
     "pyyaml>=6.0",
+    "tiktoken>=0.7",
 ]
+
+[project.urls]
+Repository = "https://github.com/krishddd/Reduction"
 
 [project.scripts]
 reduction-sim = "simulator.simulate:main"
 
 [tool.setuptools.packages.find]
 include = ["reduction*", "simulator*"]
+
+[tool.setuptools.package-data]
+reduction = ["py.typed", "prompts/*.md", "gateway/*.yaml"]
 
 [tool.ruff]
 line-length = 100

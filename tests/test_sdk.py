@@ -35,8 +35,16 @@ def test_decode_toon_roundtrip():
     opt = TokenOptimizer(OptimizerConfig(output_format="toon"))
     text = "items[2]{id,name}:\n  1,alice\n  2,bob"
     assert opt.decode_output(text) == [
-        {"id": "1", "name": "alice"},
-        {"id": "2", "name": "bob"},
+        {"id": 1, "name": "alice"},
+        {"id": 2, "name": "bob"},
+    ]
+
+
+def test_decode_toon_coerces_scalar_types():
+    opt = TokenOptimizer(OptimizerConfig(output_format="toon"))
+    text = 'rows[1]{n,ok,ratio,note,empty}:\n  3,true,0.5,"a, b",null'
+    assert opt.decode_output(text) == [
+        {"n": 3, "ok": True, "ratio": 0.5, "note": "a, b", "empty": None}
     ]
 
 
@@ -47,6 +55,28 @@ def test_record_usage_counts_cache_reads_both_shapes():
     s = opt.report()
     assert s["calls"] == 2
     assert s["cache_read_tokens"] == 5200
+
+
+def test_record_usage_captures_billed_and_cache_write():
+    opt = TokenOptimizer()
+    opt.record_usage(
+        {
+            "input_tokens": 1200,
+            "output_tokens": 80,
+            "cache_creation_input_tokens": 400,
+            "cache_read_input_tokens": 0,
+        }
+    )
+    s = opt.report()
+    assert s["billed_input_tokens"] == 1200
+    assert s["cache_write_tokens"] == 400
+    assert s["cache_read_tokens"] == 0
+
+
+def test_prepare_records_normalize_savings():
+    opt = TokenOptimizer(OptimizerConfig(caveman=False, output_format="text"))
+    opt.prepare(system="s", user="dup\ndup\ndup\n\n\n\n\n")
+    assert opt.report()["input_tokens_raw"] >= opt.report()["input_tokens_optimized"]
 
 
 def test_disabled_layers_are_noops():

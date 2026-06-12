@@ -61,10 +61,13 @@ def demo() -> None:
     opt = TokenOptimizer()
     client.message = wrap_message_fn(client.message, opt, output_format="toon")
 
+    # Repeated log lines (common in scan output) collapse via dedupe; blank
+    # runs collapse via whitespace strip — both reduce the user-turn tokens.
+    noisy_user = "endpoints:\n" + ("  GET /api/health -> 200\n" * 6) + "\n\n\n\ndone"
     resp = client.message(
         model="claude-sonnet-4-6",
         system="You are an ASI security planner.",
-        user="target:\n\n\n  https://example.test   \n  https://example.test",
+        user=noisy_user,
     )
     print("response:", resp.text)
     print()

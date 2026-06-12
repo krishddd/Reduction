@@ -93,9 +93,11 @@ class TokenOptimizer:
         fmt = output_format if output_format is not None else cfg.output_format
         applied: list[str] = []
 
-        raw_chars = len(system) + len(user)
-        for c in (static_context or []) + (volatile_context or []):
-            raw_chars += len(c)
+        # Char accounting tracks the *payload we actually shrink* (user turn +
+        # context) — never the system instructions, which caveman intentionally
+        # grows. This keeps optimized <= raw and the savings number honest.
+        raw_chars = len(user) + sum(len(c) for c in (static_context or []))
+        raw_chars += sum(len(c) for c in (volatile_context or []))
 
         # Layer 2: compress reused context documents (never instructions).
         context = list(static_context or [])
@@ -105,13 +107,19 @@ class TokenOptimizer:
             self.metrics.record_input(before, "\n".join(context), layer="compress")
             applied.append("compress")
 
-        # Always-on: normalize every text input.
+        # Always-on: normalize every text input, recording the savings.
         if cfg.strip_whitespace or cfg.dedupe_lines:
-            user = normalize.normalize(user, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines)
-            context = [
-                normalize.normalize(c, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines)
-                for c in context
-            ]
+            norm_user = normalize.normalize(
+                user, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines
+            )
+            self.metrics.record_input(user, norm_user, layer="normalize")
+            user = norm_user
+            norm_context = []
+            for c in context:
+                nc = normalize.normalize(c, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines)
+                self.metrics.record_input(c, nc, layer="normalize")
+                norm_context.append(nc)
+            context = norm_context
             applied.append("normalize")
 
         # Layer 5 (instructions): caveman + format contract.
@@ -129,9 +137,8 @@ class TokenOptimizer:
         )
         applied.append("ordering")
 
-        opt_chars = len(system_text) + len(user) + sum(len(c) for c in context)
-        for c in volatile_context or []:
-            opt_chars += len(c)
+        opt_chars = len(user) + sum(len(c) for c in context)
+        opt_chars += sum(len(c) for c in (volatile_context or []))
 
         return OptimizedRequest(
             system_blocks=system_blocks,
@@ -191,19 +198,31 @@ class TokenOptimizer:
     # ---- metrics ------------------------------------------------------
 
     def record_usage(self, usage: Any) -> None:
-        """Record provider usage (Anthropic/OpenAI shapes both supported)."""
-        cache_read = (
-            _get(usage, "cache_read_input_tokens")
-            or _get(usage, "cache_read_tokens")
-            or _get_nested(usage, "prompt_tokens_details", "cached_tokens")
-            or 0
+        """Record provider usage (Anthropic and OpenAI shapes both supported).
+
+        Anthropic exposes ``input_tokens`` (uncached), ``cache_read_input_tokens``
+        and ``cache_creation_input_tokens``; OpenAI exposes ``prompt_tokens`` with
+        a nested ``prompt_tokens_details.cached_tokens``. Extraction is
+        None-safe — a legitimate 0 is never confused with "field absent".
+        """
+        cache_read = _first_present(
+            _get(usage, "cache_read_input_tokens"),
+            _get(usage, "cache_read_tokens"),
+            _get_nested(usage, "prompt_tokens_details", "cached_tokens"),
         )
-        out = _get(usage, "output_tokens") or _get(usage, "completion_tokens") or 0
-        self.metrics.record_call(cache_read_tokens=int(cache_read))
-        # Caveman/TOON savings are realized as a smaller actual output; we
-        # record it as both raw and optimized so the call count stays honest
-        # while the cache-read tokens still surface in the summary.
-        self.metrics.record_output(int(out), int(out))
+        cache_write = _first_present(_get(usage, "cache_creation_input_tokens"))
+        billed_input = _first_present(_get(usage, "input_tokens"), _get(usage, "prompt_tokens"))
+        out = _first_present(_get(usage, "output_tokens"), _get(usage, "completion_tokens"))
+
+        self.metrics.record_call(
+            billed_input_tokens=billed_input,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+        # Caveman/TOON savings are realized as a smaller actual output; record
+        # it as both raw and optimized so the call count stays honest while the
+        # billing breakdown still surfaces in the summary.
+        self.metrics.record_output(out, out)
 
     def report(self) -> dict:
         return self.metrics.summary()
@@ -236,11 +255,46 @@ def _get_nested(obj: Any, outer: str, inner: str) -> Any:
     return _get(o, inner) if o is not None else None
 
 
+def _first_present(*values: Any) -> int:
+    """Return the first non-None value as int (so a real 0 wins over absence)."""
+    for v in values:
+        if v is not None:
+            return int(v)
+    return 0
+
+
+def _coerce_scalar(raw: str) -> Any:
+    """Reverse the TOON scalar encoding: numbers, bools, null, quoted strings."""
+    s = raw.strip()
+    if s.startswith('"'):
+        try:
+            import json
+
+            return json.loads(s)
+        except Exception:
+            return s
+    if s == "null":
+        return None
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
 def _decode_toon(text: str) -> Any:
     """Decode the tabular TOON subset back to JSON-compatible objects.
 
     Handles the uniform-array header form ``name[N]{k1,k2}:`` followed by
-    comma rows. Falls back to returning the raw text for anything else.
+    comma rows, restoring scalar types and unquoting quoted cells. Falls back
+    to returning the raw text for anything it does not recognize.
     """
     import csv
     import io
@@ -256,6 +310,7 @@ def _decode_toon(text: str) -> Any:
     for line in lines[1:]:
         if not line.strip():
             continue
-        values = next(csv.reader(io.StringIO(line.strip())))
+        cells = next(csv.reader(io.StringIO(line.strip())))
+        values = [_coerce_scalar(c) for c in cells]
         rows.append(dict(zip(keys, values, strict=False)))
     return rows

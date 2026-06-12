@@ -51,6 +51,18 @@ class OptimizerConfig:
     track_metrics: bool = _flag("REDUCTION_METRICS", True)
     metrics_path: str | None = os.environ.get("REDUCTION_METRICS_PATH")
 
+    VALID_FORMATS = ("text", "toon", "yaml")
+
+    def __post_init__(self) -> None:
+        if self.output_format not in self.VALID_FORMATS:
+            raise ValueError(
+                f"output_format must be one of {self.VALID_FORMATS}, got {self.output_format!r}"
+            )
+        if not 0.0 < self.compression_rate <= 1.0:
+            raise ValueError(f"compression_rate must be in (0, 1], got {self.compression_rate}")
+        if not 0.0 < self.semantic_threshold <= 1.0:
+            raise ValueError(f"semantic_threshold must be in (0, 1], got {self.semantic_threshold}")
+
     def with_overrides(self, **kwargs: object) -> OptimizerConfig:
         """Return a copy with per-call overrides applied."""
         data = {**self.__dict__, **{k: v for k, v in kwargs.items() if v is not None}}
