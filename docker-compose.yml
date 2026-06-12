@@ -1,0 +1,32 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDUCTION_SEMANTIC_CACHE: "true"
+      REDUCTION_SEMANTIC_THRESHOLD: "0.92"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # redis-stack ships RediSearch + vector similarity (required for
+  # redis-semantic caching; plain redis is not enough).
+  redis:
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

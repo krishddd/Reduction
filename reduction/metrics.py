@@ -1,0 +1,97 @@
+"""Token-savings accounting — the `zap gain` of the in-process pipeline.
+
+Tracks tokens before vs after optimization across every input and output,
+and (when the provider reports it) native cache reads. Estimation uses a
+~4-chars-per-token heuristic when an exact tokenizer is not available, which
+is fine for relative savings reporting.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(text: str) -> int:
+    """Cheap, tokenizer-free token estimate (~4 chars/token)."""
+    return max(1, round(len(text) / CHARS_PER_TOKEN)) if text else 0
+
+
+@dataclass
+class Metrics:
+    calls: int = 0
+    input_tokens_raw: int = 0
+    input_tokens_optimized: int = 0
+    output_tokens_raw: int = 0
+    output_tokens_optimized: int = 0
+    cache_read_tokens: int = 0
+    events: list[dict] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def record_input(self, raw: str, optimized: str, *, layer: str) -> None:
+        with self._lock:
+            r, o = estimate_tokens(raw), estimate_tokens(optimized)
+            self.input_tokens_raw += r
+            self.input_tokens_optimized += o
+            if r != o:
+                self.events.append({"kind": "input", "layer": layer, "raw": r, "opt": o})
+
+    def record_output(self, raw_tokens: int, optimized_tokens: int) -> None:
+        with self._lock:
+            self.output_tokens_raw += raw_tokens
+            self.output_tokens_optimized += optimized_tokens
+
+    def record_call(self, *, cache_read_tokens: int = 0) -> None:
+        with self._lock:
+            self.calls += 1
+            self.cache_read_tokens += cache_read_tokens
+
+    @property
+    def input_saved(self) -> int:
+        return self.input_tokens_raw - self.input_tokens_optimized
+
+    @property
+    def total_saved(self) -> int:
+        return self.input_saved + (self.output_tokens_raw - self.output_tokens_optimized)
+
+    @property
+    def savings_pct(self) -> float:
+        total_raw = self.input_tokens_raw + self.output_tokens_raw
+        return (self.total_saved / total_raw * 100) if total_raw else 0.0
+
+    def summary(self) -> dict:
+        return {
+            "calls": self.calls,
+            "input_tokens_raw": self.input_tokens_raw,
+            "input_tokens_optimized": self.input_tokens_optimized,
+            "output_tokens_raw": self.output_tokens_raw,
+            "output_tokens_optimized": self.output_tokens_optimized,
+            "cache_read_tokens": self.cache_read_tokens,
+            "tokens_saved": self.total_saved,
+            "savings_pct": round(self.savings_pct, 1),
+        }
+
+    def render(self) -> str:
+        # ASCII-only so it prints on any console (incl. Windows cp1252).
+        s = self.summary()
+        bar_len = 24
+        filled = round(bar_len * s["savings_pct"] / 100)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        return (
+            "Reduction - Token Savings\n"
+            "============================================\n"
+            f"Calls:            {s['calls']:>12,}\n"
+            f"Input  raw->opt:  {s['input_tokens_raw']:>12,} -> {s['input_tokens_optimized']:,}\n"
+            f"Output raw->opt:  {s['output_tokens_raw']:>12,} -> {s['output_tokens_optimized']:,}\n"
+            f"Native cache rd:  {s['cache_read_tokens']:>12,}\n"
+            f"Tokens saved:     {s['tokens_saved']:>12,} ({s['savings_pct']}%)\n"
+            f"Efficiency: {bar} {s['savings_pct']}%"
+        )
+
+    def persist(self, path: str | Path) -> None:
+        data = {k: v for k, v in asdict(self).items() if k != "_lock"}
+        Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")

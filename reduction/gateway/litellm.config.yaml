@@ -1,0 +1,25 @@
+# LiteLLM proxy config — Layer 3 semantic cache.
+# Run standalone:  litellm --config reduction/gateway/litellm.config.yaml
+# Or via docker-compose (see docker-compose.yml).
+
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis-semantic
+    host: os.environ/REDIS_HOST
+    port: os.environ/REDIS_PORT
+    # Conservative threshold — lower toward 0.90 only after replaying a query
+    # log and checking for false hits.
+    similarity_threshold: 0.92
+    redis_semantic_cache_embedding_model: text-embedding-3-small
+    redis_semantic_cache_use_async: true
