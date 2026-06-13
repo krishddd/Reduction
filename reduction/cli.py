@@ -87,6 +87,49 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_proxy(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from reduction.proxy import build_app
+    except ImportError:
+        sys.stderr.write("The proxy needs extras. Install: pip install 'reduction[gateway]'\n")
+        return 1
+    uvicorn.run(build_app(), host=args.host, port=args.port)
+    return 0
+
+
+def _cmd_memory(args: argparse.Namespace) -> int:
+    from reduction.memory import Memory
+
+    mem = Memory(args.db, namespace=args.namespace)
+    if args.action == "add":
+        mid = mem.add(args.text)
+        sys.stdout.write(f"stored id={mid} (namespace={args.namespace})\n")
+    elif args.action == "search":
+        for hit in mem.search(args.text, k=args.k):
+            sys.stdout.write(f"{hit.score:.3f}  {hit.text[:100]}\n")
+    return 0
+
+
+def _cmd_learn(args: argparse.Namespace) -> int:
+    from reduction.learn import FailureLog, write_corrections
+
+    log = FailureLog(args.log)
+    corrections = log.derive_corrections(min_occurrences=args.min_occurrences)
+    if not corrections:
+        sys.stderr.write("no recurring failures found\n")
+        return 0
+    if args.write:
+        write_corrections(args.write, corrections)
+        sys.stdout.write(f"wrote {len(corrections)} corrections to {args.write}\n")
+    else:
+        from reduction.learn import render_corrections
+
+        sys.stdout.write(render_corrections(corrections) + "\n")
+    return 0
+
+
 _WRAP_SNIPPETS = {
     "anthropic": (
         "from reduction.adapters import OptimizedAnthropic\n"
@@ -162,6 +205,25 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--host", default="127.0.0.1")
     srv.add_argument("--port", type=int, default=8000)
     srv.set_defaults(func=_cmd_serve)
+
+    px = sub.add_parser("proxy", help="run the OpenAI/Anthropic-compatible compression proxy")
+    px.add_argument("--host", default="127.0.0.1")
+    px.add_argument("--port", type=int, default=8788)
+    px.set_defaults(func=_cmd_proxy)
+
+    mem = sub.add_parser("memory", help="add/search persistent vector memory")
+    mem.add_argument("action", choices=["add", "search"])
+    mem.add_argument("text")
+    mem.add_argument("--db", default="reduction-memory.db")
+    mem.add_argument("--namespace", default="default")
+    mem.add_argument("-k", type=int, default=5)
+    mem.set_defaults(func=_cmd_memory)
+
+    lrn = sub.add_parser("learn", help="derive corrections from a failure log")
+    lrn.add_argument("--log", default="reduction-failures.jsonl")
+    lrn.add_argument("--min-occurrences", type=int, default=2)
+    lrn.add_argument("--write", help="instructions file to update (e.g. CLAUDE.md)")
+    lrn.set_defaults(func=_cmd_learn)
 
     w = sub.add_parser("wrap", help="print integration snippet for an agent")
     w.add_argument("agent", choices=list(_WRAP_SNIPPETS))

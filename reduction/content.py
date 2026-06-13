@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from reduction import ccr as ccr_mod
 from reduction.ccr import CompressionStore
-from reduction.layers import diffstat, jsoncrush, logcrush
+from reduction.layers import codecrush, diffstat, jsoncrush, logcrush
 from reduction.layers.detect import ContentType, detect
 from reduction.layers.normalize import normalize
 from reduction.metrics import estimate_tokens
@@ -53,7 +53,9 @@ def _compress_by_type(text: str, ctype: ContentType) -> tuple[str, bool]:
         return diffstat.crush_diff(text)
     if ctype is ContentType.LOG:
         return logcrush.crush_log(text)
-    # code / markdown / text: lossless normalization only (safe, no CCR needed).
+    if ctype is ContentType.CODE:
+        return codecrush.crush_code(text)
+    # markdown / text: lossless normalization only (safe, no CCR needed).
     return normalize(text, strip=True, dedupe=True), False
 
 

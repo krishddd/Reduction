@@ -66,6 +66,9 @@ pip install -e .                # core SDK (zero heavy deps)
 pip install -e ".[gateway]"     # + FastAPI/LiteLLM HTTP gateway
 pip install -e ".[compress]"    # + LLMLingua-2 (Layer 2)
 pip install -e ".[mcp]"         # + MCP server (reduction_compress/retrieve/stats)
+pip install -e ".[proxy]"       # + OpenAI/Anthropic compression proxy
+pip install -e ".[code]"        # + tree-sitter AST code compression
+pip install -e ".[memory]"      # + sentence-transformers + hnswlib vector memory
 pip install -e ".[tokenizer]"   # + tiktoken (accurate token counts)
 pip install -e ".[dev]"         # + test/lint tooling
 ```
@@ -168,7 +171,63 @@ reduction simulate --daily-input-tokens 5000000
 reduction wrap anthropic                # print a copy-paste integration snippet
 reduction demo                          # compress a sample and show savings
 reduction serve / reduction mcp         # gateway / MCP server
+reduction proxy --port 8788             # OpenAI/Anthropic-compatible compression proxy
+reduction memory add "..." / search "..."   # persistent vector memory
+reduction learn --log f.jsonl --write CLAUDE.md   # failure-learning corrections
 ```
+
+## Advanced subsystems
+
+These close the gap with full context-optimization platforms. All have
+dependency-free fallbacks, so they work before you install any extras.
+
+### Compression proxy ([reduction/proxy.py](reduction/proxy.py))
+A drop-in OpenAI- and Anthropic-compatible HTTP proxy. Point any client at it;
+it compresses large message content, injects the `reduction_retrieve` tool, and
+**transparently satisfies retrieval tool calls** from the CCR store so the
+client never sees the round-trip.
+
+```bash
+pip install -e ".[proxy]"
+OPENAI_BASE_URL=https://api.openai.com reduction proxy --port 8788
+# point your client's base_url at http://127.0.0.1:8788
+```
+
+### AST-aware code compression ([reduction/layers/codecrush.py](reduction/layers/codecrush.py))
+`CODE` content keeps imports, decorators, and class/function signatures while
+eliding bodies (`... (12 lines)`) — the agent sees the shape, retrieves a body
+via CCR when it needs one. tree-sitter (`[code]` extra) for language-exact
+parsing; robust Python/JS/Rust heuristic otherwise.
+
+### Persistent vector memory ([reduction/memory.py](reduction/memory.py))
+Per-project SQLite store with semantic search for cross-turn / cross-agent
+recall. Namespaced so projects never bleed into each other.
+
+```python
+from reduction.memory import Memory
+mem = Memory("proj.db", namespace="my-project")
+mem.add("the deploy step needs AWS_PROFILE=prod", metadata={"src": "runbook"})
+hits = mem.search("how do I deploy", k=3)
+```
+
+Real embeddings with `[memory]` (sentence-transformers + hnswlib); a
+deterministic hashing embedding otherwise.
+
+### Failure-learning ([reduction/learn.py](reduction/learn.py))
+Record agent outcomes; recurring failures become corrections written into a
+managed block in `CLAUDE.md` / `AGENTS.md`, so the next run starts smarter.
+
+```python
+from reduction.learn import FailureLog, write_corrections
+log = FailureLog()
+log.record(context="run tests", action="pytest -k foo", outcome="fail", error="no tests ran")
+write_corrections("CLAUDE.md", log.derive_corrections(min_occurrences=2))
+```
+
+### Batch-API CCR ([reduction/ccr_batch.py](reduction/ccr_batch.py))
+Resolves `reduction_retrieve` tool calls that arrive in asynchronous Batch API
+results, producing continuation messages — CCR stays reversible even off the
+live request path.
 
 ## Configuration
 

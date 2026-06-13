@@ -37,6 +37,18 @@ tokenizer = [
 mcp = [
     "mcp>=1.2",           # expose reduction_compress/retrieve/stats to MCP hosts
 ]
+code = [
+    "tree-sitter-language-pack>=0.2",  # accurate AST code compression (else heuristic)
+]
+memory = [
+    "sentence-transformers>=2.2",      # real embeddings (else hashing fallback)
+    "hnswlib>=0.8",                    # ANN index for large corpora (else brute force)
+]
+proxy = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
