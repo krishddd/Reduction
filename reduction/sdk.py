@@ -178,9 +178,18 @@ class TokenOptimizer:
         return filtered
 
     def _ccr_store(self):
-        from reduction.ccr import get_default_store
+        from reduction.ccr import CompressionStore, get_default_store
 
-        return get_default_store(self.config.ccr_store_path)
+        # With an explicit path, use a dedicated persistent store (cached on the
+        # instance). Without one, share the process-wide default store so the
+        # MCP server / proxy can retrieve what this optimizer compressed.
+        if self.config.ccr_store_path:
+            cached = getattr(self, "_ccr_store_obj", None)
+            if cached is None:
+                cached = CompressionStore(path=self.config.ccr_store_path)
+                self._ccr_store_obj = cached
+            return cached
+        return get_default_store()
 
     def retrieve(self, ref: str) -> str | None:
         """Expand a CCR ref back to its original content (None if unknown)."""

@@ -235,7 +235,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _force_utf8_stdio() -> None:
+    # Compressed text / memory hits can contain non-ASCII; on a Windows cp1252
+    # console a bare write would raise UnicodeEncodeError. Reconfigure to UTF-8
+    # (replace on failure) so the CLI never crashes on output encoding.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     args = build_parser().parse_args(argv)
     return args.func(args)
 

@@ -18,7 +18,11 @@ mid-stream CCR retrieval resolved transparently.
 Run:  ``reduction proxy --port 8788``   (set OPENAI_BASE_URL / ANTHROPIC_BASE_URL)
 """
 
-from __future__ import annotations
+# NB: no ``from __future__ import annotations`` here. FastAPI resolves the
+# handler's ``request: Request`` annotation via get_type_hints against the
+# module globals; with stringized annotations and ``Request`` imported locally
+# inside build_app, that resolution fails and the param is mistaken for a query
+# field (HTTP 422). Eager annotations keep the route handlers working.
 
 import os
 from typing import Any
@@ -238,12 +242,22 @@ class AnthropicToolUseCollector:
         ]
 
 
-def build_app():  # pragma: no cover - exercised via integration, not unit tests
-    """Construct the FastAPI proxy app (requires the gateway extra)."""
+def default_client_factory():  # pragma: no cover - trivial
     import httpx
+
+    return httpx.AsyncClient()
+
+
+def build_app(client_factory=None):
+    """Construct the FastAPI proxy app (requires the gateway extra).
+
+    ``client_factory`` returns an httpx.AsyncClient; override it in tests to
+    inject a MockTransport. Defaults to a real client.
+    """
     from fastapi import FastAPI, Request, Response
     from fastapi.responses import StreamingResponse
 
+    factory = client_factory or default_client_factory
     app = FastAPI(title="Reduction Proxy")
     openai_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
     anthropic_base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
@@ -252,9 +266,6 @@ def build_app():  # pragma: no cover - exercised via integration, not unit tests
     async def healthz() -> dict:
         return {"status": "ok"}
 
-    async def _forward(client, url, headers, body):
-        return await client.post(url, json=body, headers=headers, timeout=120.0)
-
     @app.post("/v1/chat/completions")
     async def openai_chat(request: Request) -> Response:
         body = compress_openai_request(await request.json())
@@ -262,15 +273,16 @@ def build_app():  # pragma: no cover - exercised via integration, not unit tests
         url = f"{openai_base}/v1/chat/completions"
         if body.get("stream"):
             return StreamingResponse(
-                _stream_openai(url, headers, body), media_type="text/event-stream"
+                _stream_openai(factory, url, headers, body), media_type="text/event-stream"
             )
-        async with httpx.AsyncClient() as client:
+        async with factory() as client:
             for _ in range(MAX_RETRIEVE_HOPS):
-                r = await _forward(client, url, headers, body)
-                retrievals = extract_openai_retrievals(r.json())
+                r = await client.post(url, json=body, headers=headers, timeout=120.0)
+                data = r.json()
+                retrievals = extract_openai_retrievals(data)
                 if not retrievals:
                     return Response(r.content, r.status_code, media_type="application/json")
-                body = _continue_openai(body, r.json(), retrievals)
+                body = _continue_openai(body, data, retrievals)
         return Response(r.content, r.status_code, media_type="application/json")
 
     @app.post("/v1/messages")
@@ -280,15 +292,16 @@ def build_app():  # pragma: no cover - exercised via integration, not unit tests
         url = f"{anthropic_base}/v1/messages"
         if body.get("stream"):
             return StreamingResponse(
-                _stream_anthropic(url, headers, body), media_type="text/event-stream"
+                _stream_anthropic(factory, url, headers, body), media_type="text/event-stream"
             )
-        async with httpx.AsyncClient() as client:
+        async with factory() as client:
             for _ in range(MAX_RETRIEVE_HOPS):
-                r = await _forward(client, url, headers, body)
-                retrievals = extract_anthropic_retrievals(r.json())
+                r = await client.post(url, json=body, headers=headers, timeout=120.0)
+                data = r.json()
+                retrievals = extract_anthropic_retrievals(data)
                 if not retrievals:
                     return Response(r.content, r.status_code, media_type="application/json")
-                body = _continue_anthropic(body, r.json(), retrievals)
+                body = _continue_anthropic(body, data, retrievals)
         return Response(r.content, r.status_code, media_type="application/json")
 
     return app
@@ -299,7 +312,7 @@ def _passthrough_headers(request) -> dict[str, str]:
     return {k: v for k, v in request.headers.items() if k.lower() not in skip}
 
 
-def _continue_openai(body, response, retrievals):  # pragma: no cover
+def _continue_openai(body, response, retrievals):
     body = dict(body)
     assistant = response["choices"][0]["message"]
     messages = list(body["messages"]) + [assistant]
@@ -310,7 +323,7 @@ def _continue_openai(body, response, retrievals):  # pragma: no cover
     return body
 
 
-def _continue_anthropic(body, response, retrievals):  # pragma: no cover
+def _continue_anthropic(body, response, retrievals):
     body = dict(body)
     messages = list(body["messages"]) + [{"role": "assistant", "content": response["content"]}]
     tool_results = []
@@ -324,10 +337,42 @@ def _continue_anthropic(body, response, retrievals):  # pragma: no cover
     return body
 
 
-# --- streaming generators (integration; pure collectors above are tested) ---
+# --- streaming generators -------------------------------------------------
+#
+# SSE is event-framed: events are separated by a blank line, and a single event
+# may span multiple lines (Anthropic sends ``event: <type>\ndata: {...}``). We
+# iterate whole events (not lines) and re-emit each with its ``\n\n`` terminator
+# so downstream framing stays valid — the previous line-based version corrupted
+# the stream by dropping blank-line separators.
 
 
-def _reconstruct_openai_assistant(collector) -> dict[str, Any]:  # pragma: no cover
+async def _aiter_sse_events(response):
+    """Yield complete SSE event blocks (text between blank lines)."""
+    buf = ""
+    async for text in response.aiter_text():
+        buf += text
+        while "\n\n" in buf:
+            event, buf = buf.split("\n\n", 1)
+            if event.strip():
+                yield event
+    if buf.strip():
+        yield buf
+
+
+def _event_data(event: str) -> dict[str, Any] | None:
+    """Extract and parse the ``data:`` payload from one SSE event block."""
+    for line in event.split("\n"):
+        parsed = parse_sse_data(line)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _event_is_done(event: str) -> bool:
+    return any(line.strip() == "data: [DONE]" for line in event.split("\n"))
+
+
+def _reconstruct_openai_assistant(collector) -> dict[str, Any]:
     import json
 
     return {
@@ -344,81 +389,70 @@ def _reconstruct_openai_assistant(collector) -> dict[str, Any]:  # pragma: no co
     }
 
 
-async def _stream_openai(url, headers, body, hops=MAX_RETRIEVE_HOPS):  # pragma: no cover
+async def _stream_openai(factory, url, headers, body, hops=MAX_RETRIEVE_HOPS):
     """Stream OpenAI SSE, satisfying reduction_retrieve calls transparently.
 
-    Content chunks forward immediately (low latency). Tool-call chunks are
+    Content events forward immediately (low latency). Tool-call events are
     buffered; at stream end, if every buffered call is reduction_retrieve we
     resolve them and continue with a fresh upstream stream; otherwise we replay
-    the buffered chunks so the client's own tools still work.
+    the buffered events so the client's own tools still work.
     """
-    import httpx
-
-    async with httpx.AsyncClient() as client:
+    async with factory() as client:
         for _ in range(hops):
             collector = OpenAIToolCallCollector()
             buffered: list[str] = []
             saw_done = False
             async with client.stream("POST", url, json=body, headers=headers, timeout=120.0) as r:
-                async for raw in r.aiter_lines():
-                    if not raw:
+                async for event in _aiter_sse_events(r):
+                    if _event_is_done(event):
+                        saw_done = True
                         continue
-                    chunk = parse_sse_data(raw)
-                    if chunk is None:
-                        if raw.strip() == "data: [DONE]":
-                            saw_done = True
-                            continue
-                        yield raw + "\n"
+                    data = _event_data(event)
+                    if data is None:
+                        yield event + "\n\n"
                         continue
-                    if OpenAIToolCallCollector.chunk_has_tool_calls(chunk):
-                        collector.feed(chunk)
-                        buffered.append(raw)
+                    if OpenAIToolCallCollector.chunk_has_tool_calls(data):
+                        collector.feed(data)
+                        buffered.append(event)
                     else:
-                        yield raw + "\n"
+                        yield event + "\n\n"
             refs = collector.retrieve_refs()
             only_retrieve = collector.has_tool_calls() and len(refs) == len(collector.finalize())
             if refs and only_retrieve:
                 assistant = _reconstruct_openai_assistant(collector)
                 body = _continue_openai(body, {"choices": [{"message": assistant}]}, refs)
                 continue
-            # Not a pure-retrieval turn: replay any buffered tool-call chunks.
-            for raw in buffered:
-                yield raw + "\n"
+            for event in buffered:  # not pure-retrieval: replay buffered tool events
+                yield event + "\n\n"
             if saw_done:
                 yield "data: [DONE]\n\n"
             return
         yield "data: [DONE]\n\n"
 
 
-async def _stream_anthropic(url, headers, body, hops=MAX_RETRIEVE_HOPS):  # pragma: no cover
+async def _stream_anthropic(factory, url, headers, body, hops=MAX_RETRIEVE_HOPS):
     """Stream Anthropic SSE, satisfying reduction_retrieve calls transparently."""
-    import httpx
-
-    async with httpx.AsyncClient() as client:
+    async with factory() as client:
         for _ in range(hops):
             collector = AnthropicToolUseCollector()
             buffered: list[str] = []
             async with client.stream("POST", url, json=body, headers=headers, timeout=120.0) as r:
-                async for raw in r.aiter_lines():
-                    if not raw:
+                async for event in _aiter_sse_events(r):
+                    data = _event_data(event)
+                    if data is None:
+                        yield event + "\n\n"
                         continue
-                    event = parse_sse_data(raw)
-                    if event is None:
-                        yield raw + "\n"
-                        continue
-                    if AnthropicToolUseCollector.event_is_tool_use_block(
-                        event, collector.tool_use_indices()
-                    ):
-                        collector.feed(event)
-                        buffered.append(raw)
-                    elif (
-                        event.get("type") == "content_block_start"
-                        and (event.get("content_block", {}) or {}).get("type") == "tool_use"
-                    ):
-                        collector.feed(event)
-                        buffered.append(raw)
+                    is_tool = AnthropicToolUseCollector.event_is_tool_use_block(
+                        data, collector.tool_use_indices()
+                    ) or (
+                        data.get("type") == "content_block_start"
+                        and (data.get("content_block", {}) or {}).get("type") == "tool_use"
+                    )
+                    if is_tool:
+                        collector.feed(data)
+                        buffered.append(event)
                     else:
-                        yield raw + "\n"
+                        yield event + "\n\n"
             refs = collector.retrieve_refs()
             only_retrieve = collector.has_tool_calls() and len(refs) == len(collector.finalize())
             if refs and only_retrieve:
@@ -428,6 +462,6 @@ async def _stream_anthropic(url, headers, body, hops=MAX_RETRIEVE_HOPS):  # prag
                 ]
                 body = _continue_anthropic(body, {"content": content}, refs)
                 continue
-            for raw in buffered:
-                yield raw + "\n"
+            for event in buffered:
+                yield event + "\n\n"
             return
