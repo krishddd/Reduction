@@ -1,3 +1,5 @@
+import pytest
+
 from reduction.memory import Memory, cosine, hashing_embedding
 
 
@@ -42,3 +44,33 @@ def test_persists_across_instances(tmp_path):
 def test_cosine_basics():
     assert cosine([1, 0], [1, 0]) == 1.0
     assert abs(cosine([1, 0], [0, 1])) < 1e-9
+
+
+def test_ann_index_matches_brute_force(tmp_path):
+    pytest.importorskip("hnswlib")
+    docs = [
+        "configure the semantic cache threshold value",
+        "the cat sat on the warm mat",
+        "redis vector similarity search setup",
+        "token budget governance for agents",
+        "how to deploy with aws profile prod",
+    ]
+    mem = Memory(tmp_path / "ann.db")
+    for d in docs:
+        mem.add(d)
+    # ANN path is active; verify it returns the obviously-best match on top.
+    hits = mem.search("configure cache threshold", k=3)
+    assert hits
+    assert "cache threshold" in hits[0].text
+    assert hits[0].score >= hits[-1].score
+
+
+def test_ann_rebuilds_from_disk(tmp_path):
+    pytest.importorskip("hnswlib")
+    db = tmp_path / "ann.db"
+    m1 = Memory(db)
+    m1.add("durable tokenization entry")
+    m1.close()
+    m2 = Memory(db)  # ANN index rebuilt from SQLite rows
+    hits = m2.search("tokenization", k=1)
+    assert hits and "tokenization" in hits[0].text

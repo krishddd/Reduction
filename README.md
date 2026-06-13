@@ -185,7 +185,10 @@ dependency-free fallbacks, so they work before you install any extras.
 A drop-in OpenAI- and Anthropic-compatible HTTP proxy. Point any client at it;
 it compresses large message content, injects the `reduction_retrieve` tool, and
 **transparently satisfies retrieval tool calls** from the CCR store so the
-client never sees the round-trip.
+client never sees the round-trip. **Streaming (SSE) is supported**: content
+tokens forward as they arrive, while `reduction_retrieve` tool-call events are
+buffered, resolved mid-stream, and the turn continues — all transparent to the
+client. Non-retrieval tool calls pass straight through.
 
 ```bash
 pip install -e ".[proxy]"
@@ -210,8 +213,10 @@ mem.add("the deploy step needs AWS_PROFILE=prod", metadata={"src": "runbook"})
 hits = mem.search("how do I deploy", k=3)
 ```
 
-Real embeddings with `[memory]` (sentence-transformers + hnswlib); a
-deterministic hashing embedding otherwise.
+Real embeddings with `[memory]` (sentence-transformers); a deterministic
+hashing embedding otherwise. When `hnswlib` is installed, search uses an ANN
+index (built from SQLite on open, updated on add) for sub-linear lookups;
+otherwise it falls back to an exact cosine scan.
 
 ### Failure-learning ([reduction/learn.py](reduction/learn.py))
 Record agent outcomes; recurring failures become corrections written into a
