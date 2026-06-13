@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reduction"
-version = "0.1.0"
+version = "0.2.0"
 description = "Five-layer token-optimization pipeline for AI agents — optimize every input and output"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,9 @@ compress = [
 tokenizer = [
     "tiktoken>=0.7",      # accurate token counts in metrics (else char heuristic)
 ]
+mcp = [
+    "mcp>=1.2",           # expose reduction_compress/retrieve/stats to MCP hosts
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -47,6 +50,7 @@ dev = [
 Repository = "https://github.com/krishddd/Reduction"
 
 [project.scripts]
+reduction = "reduction.cli:main"
 reduction-sim = "simulator.simulate:main"
 
 [tool.setuptools.packages.find]

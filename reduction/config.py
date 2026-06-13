@@ -26,6 +26,11 @@ class OptimizerConfig:
     shell_filter: bool = _flag("REDUCTION_SHELL_FILTER", True)
     zap_binary: str = os.environ.get("REDUCTION_ZAP_BINARY", "zap")
     max_tool_output_lines: int = int(os.environ.get("REDUCTION_MAX_TOOL_LINES", "200"))
+    # Content-aware compression (JSON/diff/log routing) for tool output.
+    content_routing: bool = _flag("REDUCTION_CONTENT_ROUTING", True)
+    # CCR: keep compression reversible (store originals, embed retrieval refs).
+    ccr: bool = _flag("REDUCTION_CCR", True)
+    ccr_store_path: str | None = os.environ.get("REDUCTION_CCR_STORE")
 
     # --- Layer 2: context compression (LLMLingua-2) ---
     compress_context: bool = _flag("REDUCTION_COMPRESS", False)

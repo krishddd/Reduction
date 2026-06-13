@@ -151,9 +151,23 @@ class TokenOptimizer:
         )
 
     def filter_tool_output(self, output: str, *, command: list[str] | None = None) -> str:
-        """Layer 1: shrink raw tool/command output before it re-enters context."""
+        """Layer 1: shrink raw tool/command output before it re-enters context.
+
+        With ``content_routing`` on, the output is classified (JSON/diff/log/...)
+        and sent to the specialized compressor, and — when ``ccr`` is on — the
+        original is stored so the agent can retrieve it via ``reduction_retrieve``.
+        Otherwise it falls back to the zap binary / heuristic line filter.
+        """
         if not self.config.shell_filter:
             return output
+
+        if self.config.content_routing and not command:
+            from reduction.content import compress_content
+
+            result = compress_content(output, ccr=self.config.ccr, store=self._ccr_store())
+            self.metrics.record_input(output, result.text, layer="content")
+            return result.text
+
         filtered = shell.filter_tool_output(
             output,
             command=command,
@@ -162,6 +176,15 @@ class TokenOptimizer:
         )
         self.metrics.record_input(output, filtered, layer="shell")
         return filtered
+
+    def _ccr_store(self):
+        from reduction.ccr import get_default_store
+
+        return get_default_store(self.config.ccr_store_path)
+
+    def retrieve(self, ref: str) -> str | None:
+        """Expand a CCR ref back to its original content (None if unknown)."""
+        return self._ccr_store().get(ref)
 
     # ---- outputs ------------------------------------------------------
 
