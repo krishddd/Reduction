@@ -160,6 +160,14 @@ def test_stream_anthropic_resolves_retrieval():
     assert calls["n"] == 2
 
 
+def test_stream_surfaces_upstream_error():
+    # A non-200 upstream must be passed through, not fed to the SSE parser.
+    err = json.dumps({"error": {"message": "rate limited"}}).encode()
+    client, _ = _mock_app([(429, err, "application/json")])
+    r = client.post("/v1/chat/completions", json={"messages": [], "stream": True})
+    assert "rate limited" in r.text
+
+
 def test_anthropic_stream_preserves_multiline_event_framing():
     # Anthropic events are multi-line (event: + data:); framing must survive.
     stream = _sse(

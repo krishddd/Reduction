@@ -51,3 +51,20 @@ def test_no_corrections_returns_false(tmp_path):
     log = FailureLog(tmp_path / "f.jsonl")
     log.record(context="c", action="x", outcome="fail", error="e")
     assert write_corrections(tmp_path / "X.md", log.derive_corrections(min_occurrences=2)) is False
+
+
+def test_normalize_error_clusters_variants():
+    from reduction.learn import normalize_error
+
+    a = normalize_error("Timeout after 30s connecting to 10.0.0.5:8080")
+    b = normalize_error("Timeout after 5s connecting to 192.168.1.1:443")
+    assert a == b  # numbers/paths/addresses normalized away
+
+
+def test_variant_wordings_cluster_into_one_correction(tmp_path):
+    log = FailureLog(tmp_path / "f.jsonl")
+    log.record(context="c", action="curl api", outcome="fail", error="Timeout after 30000ms")
+    log.record(context="c", action="curl api", outcome="fail", error="Timeout after 500ms")
+    corrections = log.derive_corrections(min_occurrences=2)
+    assert len(corrections) == 1
+    assert corrections[0].occurrences == 2

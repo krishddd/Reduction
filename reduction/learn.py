@@ -19,10 +19,29 @@ Flow:
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+# Strip volatile bits so variant wordings of the same failure cluster together.
+_NUM = re.compile(r"\d+")
+_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{8,}\b")
+_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][\w.\-]+){2,}")
+_QUOTED = re.compile(r"['\"`][^'\"`]*['\"`]")
+_WS = re.compile(r"\s+")
+
+
+def normalize_error(text: str) -> str:
+    """Collapse an error string to a signature that ignores volatile specifics."""
+    s = text.lower()
+    s = _PATH.sub("<path>", s)
+    s = _HEX.sub("<hex>", s)
+    s = _QUOTED.sub("<str>", s)
+    s = _NUM.sub("<n>", s)
+    return _WS.sub(" ", s).strip()
+
 
 BEGIN_MARKER = "<!-- reduction:learned:begin -->"
 END_MARKER = "<!-- reduction:learned:end -->"
@@ -66,16 +85,25 @@ class FailureLog:
         return out
 
     def derive_corrections(self, *, min_occurrences: int = 2) -> list[Correction]:
-        """Group recurring failures (by action + error) into corrections."""
+        """Group recurring failures into corrections.
+
+        Grouping is by action + *normalized* error signature, so variant
+        wordings of the same failure ("no tests ran" vs "0 tests collected in
+        2.3s") still cluster. A representative raw error is kept for the message.
+        """
         failures = [r for r in self.records() if r.outcome == "fail"]
         counter: Counter[tuple[str, str]] = Counter()
+        examples: dict[tuple[str, str], str] = {}
         for r in failures:
-            counter[(r.action.strip(), r.error.strip())] += 1
+            key = (r.action.strip(), normalize_error(r.error))
+            counter[key] += 1
+            examples.setdefault(key, r.error.strip())
 
         corrections: list[Correction] = []
-        for (action, error), count in counter.most_common():
+        for (action, _sig), count in counter.most_common():
             if count < min_occurrences:
                 continue
+            error = examples[(action, _sig)]
             guidance = f"When about to `{action}`: previously failed - {error}. Avoid or fix first."
             corrections.append(Correction(pattern=action, occurrences=count, guidance=guidance))
         return corrections

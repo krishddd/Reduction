@@ -74,7 +74,7 @@ def compress_openai_request(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def compress_anthropic_request(body: dict[str, Any]) -> dict[str, Any]:
-    """Compress messages + inject retrieve tool for an Anthropic messages request."""
+    """Compress messages + system + inject retrieve tool for an Anthropic request."""
     body = dict(body)
     messages = []
     for msg in body.get("messages", []):
@@ -83,6 +83,9 @@ def compress_anthropic_request(body: dict[str, Any]) -> dict[str, Any]:
             msg["content"] = _compress_content_field(msg["content"])
         messages.append(msg)
     body["messages"] = messages
+    # Anthropic puts the system prompt in a top-level field, not in messages.
+    if "system" in body and body["system"] is not None:
+        body["system"] = _compress_content_field(body["system"])
     body["tools"] = ccr.inject_retrieve_tool(body.get("tools"), provider="anthropic")
     return body
 
@@ -403,6 +406,10 @@ async def _stream_openai(factory, url, headers, body, hops=MAX_RETRIEVE_HOPS):
             buffered: list[str] = []
             saw_done = False
             async with client.stream("POST", url, json=body, headers=headers, timeout=120.0) as r:
+                if r.status_code != 200:
+                    body_bytes = await r.aread()
+                    yield body_bytes.decode("utf-8", errors="replace")
+                    return
                 async for event in _aiter_sse_events(r):
                     if _event_is_done(event):
                         saw_done = True
@@ -437,6 +444,10 @@ async def _stream_anthropic(factory, url, headers, body, hops=MAX_RETRIEVE_HOPS)
             collector = AnthropicToolUseCollector()
             buffered: list[str] = []
             async with client.stream("POST", url, json=body, headers=headers, timeout=120.0) as r:
+                if r.status_code != 200:
+                    body_bytes = await r.aread()
+                    yield body_bytes.decode("utf-8", errors="replace")
+                    return
                 async for event in _aiter_sse_events(r):
                     data = _event_data(event)
                     if data is None:

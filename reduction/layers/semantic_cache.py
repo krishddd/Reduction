@@ -15,6 +15,29 @@ import os
 from typing import Any
 
 
+def build_cache_params(
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    threshold: float = 0.92,
+    embedding_model: str = "text-embedding-3-small",
+) -> dict | None:
+    """Build the litellm redis-semantic cache kwargs, or None if no host.
+
+    Pure (no litellm import) so the configuration logic is unit-testable.
+    """
+    host = host or os.environ.get("REDIS_HOST")
+    if not host:
+        return None
+    return {
+        "type": "redis-semantic",
+        "host": host,
+        "port": int(port or os.environ.get("REDIS_PORT", "6379")),
+        "similarity_threshold": threshold,
+        "redis_semantic_cache_embedding_model": embedding_model,
+    }
+
+
 def configure_cache(
     *,
     host: str | None = None,
@@ -23,20 +46,16 @@ def configure_cache(
     embedding_model: str = "text-embedding-3-small",
 ) -> bool:
     """Enable litellm's redis-semantic cache. Returns True if enabled."""
-    host = host or os.environ.get("REDIS_HOST")
-    if not host:
+    params = build_cache_params(
+        host=host, port=port, threshold=threshold, embedding_model=embedding_model
+    )
+    if params is None:
         return False
     try:
         import litellm
     except ImportError:
         return False
-    litellm.cache = litellm.Cache(
-        type="redis-semantic",
-        host=host,
-        port=int(port or os.environ.get("REDIS_PORT", "6379")),
-        similarity_threshold=threshold,
-        redis_semantic_cache_embedding_model=embedding_model,
-    )
+    litellm.cache = litellm.Cache(**params)
     return True
 
 

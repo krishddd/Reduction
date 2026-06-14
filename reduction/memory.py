@@ -18,8 +18,10 @@ each other even when they share one SQLite file.
 
 from __future__ import annotations
 
+import array
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -77,33 +79,78 @@ class MemoryHit:
     metadata: dict
 
 
+def _vec_to_blob(vec: list[float]) -> bytes:
+    return array.array("f", vec).tobytes()
+
+
+def _blob_to_vec(blob: bytes) -> list[float]:
+    a = array.array("f")
+    a.frombytes(blob)
+    return list(a)
+
+
+def _load_vec(raw) -> list[float]:
+    # Current rows store float32 blobs; tolerate legacy JSON-text rows.
+    if isinstance(raw, bytes | bytearray):
+        return _blob_to_vec(bytes(raw))
+    return json.loads(raw)
+
+
 class _AnnIndex:
     """Optional hnswlib cosine index. Falls back to None when hnswlib absent.
 
     Labels are dense ints assigned in insertion order; ``_meta[label]`` holds
-    the (row id, text, metadata) so a search maps back to the stored row.
+    the (row id, text, metadata) so a search maps back to the stored row. The
+    index can be persisted with ``save`` / ``load`` so it isn't rebuilt from
+    scratch on every open.
     """
 
     def __init__(self) -> None:
         self._index = None
         self._meta: list[tuple[int, str, dict]] = []
         self._count = 0
+        self._dim: int | None = None
 
-    def _ensure(self, dim: int) -> None:
-        if self._index is None:
-            import hnswlib
+    def _new_index(self, dim: int, capacity: int):
+        import hnswlib
 
-            self._index = hnswlib.Index(space="cosine", dim=dim)
-            self._index.init_index(max_elements=1024, ef_construction=200, M=16)
-            self._index.set_ef(64)
+        idx = hnswlib.Index(space="cosine", dim=dim)
+        idx.init_index(max_elements=max(capacity, 1024), ef_construction=200, M=16)
+        idx.set_ef(64)
+        return idx
+
+    def build(self, vectors: list[list[float]], metas: list[tuple[int, str, dict]]) -> None:
+        if not vectors:
+            return
+        self._dim = len(vectors[0])
+        self._index = self._new_index(self._dim, len(vectors))
+        self._index.add_items(vectors, list(range(len(vectors))))
+        self._meta = list(metas)
+        self._count = len(vectors)
+
+    def load(self, path: str, dim: int, metas: list[tuple[int, str, dict]]) -> None:
+        import hnswlib
+
+        idx = hnswlib.Index(space="cosine", dim=dim)
+        idx.load_index(path, max_elements=max(len(metas), 1024))
+        if idx.get_current_count() != len(metas):
+            raise ValueError("stale ANN index: element count != row count")
+        idx.set_ef(64)
+        self._index, self._dim, self._meta, self._count = idx, dim, list(metas), len(metas)
 
     def add(self, vec: list[float], meta: tuple[int, str, dict]) -> None:
-        self._ensure(len(vec))
+        if self._index is None:
+            self._dim = len(vec)
+            self._index = self._new_index(self._dim, 1024)
         if self._count >= self._index.get_max_elements():
             self._index.resize_index(self._index.get_max_elements() * 2)
         self._index.add_items([vec], [self._count])
         self._meta.append(meta)
         self._count += 1
+
+    def save(self, path: str) -> None:
+        if self._index is not None:
+            self._index.save_index(path)
 
     def search(self, vec: list[float], k: int) -> list[MemoryHit]:
         if self._index is None or self._count == 0:
@@ -141,19 +188,30 @@ class Memory:
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS memory ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT, text TEXT, "
-            "embedding TEXT, metadata TEXT)"
+            "embedding BLOB, metadata TEXT)"
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ns ON memory(namespace)")
         self._conn.commit()
+        self._ann_path = f"{path}.{namespace}.hnsw"
 
-        # Build an ANN index from existing rows when hnswlib is available.
+        # Build/load an ANN index when hnswlib is available.
         self._ann: _AnnIndex | None = _AnnIndex() if _hnswlib_available() else None
         if self._ann is not None:
-            for rid, text, emb, meta in self._conn.execute(
-                "SELECT id, text, embedding, metadata FROM memory WHERE namespace=?",
+            rows = self._conn.execute(
+                "SELECT id, text, embedding, metadata FROM memory WHERE namespace=? ORDER BY id",
                 (self.namespace,),
-            ).fetchall():
-                self._ann.add(json.loads(emb), (rid, text, json.loads(meta)))
+            ).fetchall()
+            vectors = [_load_vec(emb) for _, _, emb, _ in rows]
+            metas = [(rid, text, json.loads(meta)) for rid, text, _, meta in rows]
+            loaded = False
+            if vectors and os.path.exists(self._ann_path):
+                try:
+                    self._ann.load(self._ann_path, len(vectors[0]), metas)
+                    loaded = True
+                except Exception:
+                    loaded = False
+            if not loaded and vectors:
+                self._ann.build(vectors, metas)
 
     def add(self, text: str, metadata: dict | None = None) -> int:
         vec = self.embed(text)
@@ -161,7 +219,7 @@ class Memory:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO memory (namespace, text, embedding, metadata) VALUES (?,?,?,?)",
-                (self.namespace, text, json.dumps(vec), json.dumps(meta)),
+                (self.namespace, text, _vec_to_blob(vec), json.dumps(meta)),
             )
             self._conn.commit()
             rid = int(cur.lastrowid)
@@ -183,10 +241,7 @@ class Memory:
             ).fetchall()
         hits = [
             MemoryHit(
-                id=rid,
-                text=text,
-                score=cosine(qvec, json.loads(emb)),
-                metadata=json.loads(meta),
+                id=rid, text=text, score=cosine(qvec, _load_vec(emb)), metadata=json.loads(meta)
             )
             for rid, text, emb, meta in rows
         ]
@@ -204,8 +259,19 @@ class Memory:
         with self._lock:
             self._conn.execute("DELETE FROM memory WHERE namespace=?", (self.namespace,))
             self._conn.commit()
-            # Rebuild an empty ANN index (hnswlib has no stable per-item delete).
+            # hnswlib has no stable per-item delete — drop the index entirely.
             self._ann = _AnnIndex() if _hnswlib_available() else None
+            if os.path.exists(self._ann_path):
+                try:
+                    os.remove(self._ann_path)
+                except OSError:
+                    pass
 
     def close(self) -> None:
+        # Persist the ANN index so the next open loads instead of rebuilding.
+        if self._ann is not None:
+            try:
+                self._ann.save(self._ann_path)
+            except Exception:
+                pass
         self._conn.close()

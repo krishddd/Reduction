@@ -35,4 +35,4 @@ def test_chat_rejects_bad_output_format():
 def test_metrics_endpoint():
     resp = client.get("/v1/metrics")
     assert resp.status_code == 200
-    assert "savings_pct" in resp.json()
+    assert "input_savings_pct" in resp.json()

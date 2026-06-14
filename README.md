@@ -265,6 +265,40 @@ waterfall.
 - **ci.yml** — ruff lint + format, pytest on Python 3.11/3.12, simulator smoke test.
 - **docker.yml** — builds the gateway image on `main`, publishes to GHCR on `v*` tags.
 
+## Accuracy evaluation (does compression keep answers correct?)
+
+Saving tokens is only safe if the model still answers correctly. The eval
+harness runs each case raw and compressed through an injectable `model_fn` and
+reports **answer preservation** alongside token savings, so you see the
+trade-off instead of guessing:
+
+```bash
+reduction eval        # offline self-check (synthetic log case)
+# -> Answer preservation: 100.0%   Token savings: 98.8%
+```
+
+```python
+from reduction.evals import EvalCase, run_evals
+report = run_evals(cases, model_fn)   # model_fn(context, question) -> answer
+print(report.render())                # flags any REGRESSIONS
+```
+
+Wire `model_fn` to a real client to validate on your own traffic. This is the
+number that actually matters — a high savings % with a low preservation % means
+the compression is too aggressive for that content.
+
+## Honesty notes (what the metrics do and don't claim)
+
+- **Input savings are measured; output savings are not.** Caveman/TOON shrink
+  output, but we have no counterfactual (we never see the uncompressed
+  generation), so the metrics report observed output tokens, never "output
+  saved." Use the eval harness to quantify the output/accuracy effect.
+- **Token counts for Claude are approximate.** tiktoken (`cl100k`/`o200k`) is
+  exact for OpenAI; Anthropic's tokenizer isn't bundled, so Claude counts are a
+  close proxy, not exact billing.
+- **codecrush** uses a real tree-sitter parser when `[code]` is installed and a
+  docstring-safe heuristic otherwise — both are honest about which ran.
+
 ## Caveats (read before production)
 
 - Compounded ≠ additive — measure end-to-end, don't multiply marketing numbers.

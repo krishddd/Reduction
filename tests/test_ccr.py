@@ -13,6 +13,43 @@ def test_store_roundtrip_and_idempotent():
     assert len(store) == 1
 
 
+def test_lru_eviction_caps_entries():
+    store = CompressionStore(max_entries=3, ttl_seconds=0)
+    refs = [store.put(f"payload number {i}") for i in range(5)]
+    assert len(store) == 3
+    # Oldest two evicted; newest three retained.
+    assert store.get(refs[0]) is None
+    assert store.get(refs[1]) is None
+    assert store.get(refs[4]) == "payload number 4"
+
+
+def test_lru_touch_on_get_protects_entry():
+    store = CompressionStore(max_entries=3, ttl_seconds=0)
+    a = store.put("aaaa")
+    store.put("bbbb")
+    store.put("cccc")
+    assert store.get(a) == "aaaa"  # touch a -> most-recently-used
+    store.put("dddd")  # evicts the now-oldest (bbbb), not a
+    assert store.get(a) == "aaaa"
+
+
+def test_ttl_expiry():
+    store = CompressionStore(ttl_seconds=1.0)
+    ref = store.put("data")
+    # Backdate the stored timestamp so it's well past the TTL without sleeping.
+    text, _ = store._data[ref]
+    store._data[ref] = (text, 0.0)
+    assert store.get(ref) is None
+
+
+def test_persist_roundtrips_with_timestamps(tmp_path):
+    path = tmp_path / "ccr.json"
+    s1 = CompressionStore(path=path)
+    ref = s1.put("durable original")
+    s2 = CompressionStore(path=path)
+    assert s2.get(ref) == "durable original"
+
+
 def test_store_persists_across_instances(tmp_path):
     path = tmp_path / "ccr.json"
     s1 = CompressionStore(path=path)

@@ -161,19 +161,28 @@ class TokenOptimizer:
         if not self.config.shell_filter:
             return output
 
-        if self.config.content_routing and not command:
+        # Prefer zap when a command is known and the binary is installed — it is
+        # structure-aware per command. zap is the *command-wrapping* path.
+        if command and shell.zap_available(self.config.zap_binary):
+            filtered = shell.filter_tool_output(
+                output,
+                command=command,
+                binary=self.config.zap_binary,
+                max_lines=self.config.max_tool_output_lines,
+            )
+            self.metrics.record_input(output, filtered, layer="shell")
+            return filtered
+
+        # Otherwise classify the raw text and route to a content compressor.
+        if self.config.content_routing:
             from reduction.content import compress_content
 
             result = compress_content(output, ccr=self.config.ccr, store=self._ccr_store())
             self.metrics.record_input(output, result.text, layer="content")
             return result.text
 
-        filtered = shell.filter_tool_output(
-            output,
-            command=command,
-            binary=self.config.zap_binary,
-            max_lines=self.config.max_tool_output_lines,
-        )
+        # Last resort: built-in heuristic line filter.
+        filtered = shell.builtin_filter(output, max_lines=self.config.max_tool_output_lines)
         self.metrics.record_input(output, filtered, layer="shell")
         return filtered
 
@@ -251,10 +260,9 @@ class TokenOptimizer:
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
         )
-        # Caveman/TOON savings are realized as a smaller actual output; record
-        # it as both raw and optimized so the call count stays honest while the
-        # billing breakdown still surfaces in the summary.
-        self.metrics.record_output(out, out)
+        # Output is recorded as observed only — Caveman/TOON output savings have
+        # no counterfactual, so we never claim them as "saved" (see reduction.evals).
+        self.metrics.record_output(out)
 
     def report(self) -> dict:
         return self.metrics.summary()

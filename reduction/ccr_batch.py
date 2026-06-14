@@ -54,22 +54,48 @@ class ResolvedRetrieval:
     continuation_message: dict[str, Any]
 
 
+def _message_body(result: dict[str, Any]) -> dict[str, Any]:
+    """Locate the completion body across the known batch-result nestings.
+
+    Anthropic batch:  {"custom_id", "result": {"type": "succeeded",
+                        "message": {"content": [...]}}}
+    Anthropic inline: {"message": {"content": [...]}}
+    OpenAI batch:     {"custom_id", "response": {"body": {"choices": [...]}}}
+    OpenAI inline:    {"body"/"choices": ...}
+    """
+    # Anthropic nested under result.message
+    res = result.get("result")
+    if isinstance(res, dict) and isinstance(res.get("message"), dict):
+        return res["message"]
+    if isinstance(result.get("message"), dict):
+        return result["message"]
+    # OpenAI nested under response.body
+    resp = result.get("response")
+    if isinstance(resp, dict) and isinstance(resp.get("body"), dict):
+        return resp["body"]
+    if isinstance(result.get("body"), dict):
+        return result["body"]
+    if "choices" in result or "content" in result:
+        return result
+    return {}
+
+
 def _iter_tool_calls(result: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
     """Yield (tool_use_id, name, arguments) across Anthropic + OpenAI shapes."""
-    calls: list[tuple[str, str, dict[str, Any]]] = []
+    import json
 
-    # Anthropic: result.message.content[] with type == "tool_use".
-    message = result.get("message") or result.get("response", {}).get("body", {})
-    for block in (message.get("content") or []) if isinstance(message, dict) else []:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    message = _message_body(result)
+
+    # Anthropic: content[] with type == "tool_use".
+    for block in message.get("content") or []:
         if isinstance(block, dict) and block.get("type") == "tool_use":
             calls.append((block.get("id", ""), block.get("name", ""), block.get("input", {}) or {}))
 
     # OpenAI: choices[].message.tool_calls[].function.{name,arguments}.
-    for choice in message.get("choices", []) if isinstance(message, dict) else []:
+    for choice in message.get("choices", []):
         for tc in (choice.get("message", {}) or {}).get("tool_calls", []) or []:
             fn = tc.get("function", {})
-            import json
-
             try:
                 args = json.loads(fn.get("arguments", "{}"))
             except ValueError:

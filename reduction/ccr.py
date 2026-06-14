@@ -22,12 +22,19 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 RETRIEVE_TOOL_NAME = "reduction_retrieve"
 REF_PREFIX = "ref="
+
+# Bound the in-memory store so a long-running agent session can't grow it
+# without limit. LRU by access; entries also expire after a TTL.
+DEFAULT_MAX_ENTRIES = 2048
+DEFAULT_TTL_SECONDS = 3600.0
 
 
 def content_ref(text: str) -> str:
@@ -39,48 +46,80 @@ def content_ref(text: str) -> str:
 class CompressionStore:
     """Stores originals so compressed content stays reversible.
 
-    In-memory by default; pass ``path`` to persist as JSON so refs survive
-    across processes (e.g. a proxy writing, an MCP server reading).
+    In-memory by default with LRU + TTL eviction so it can't leak. Pass ``path``
+    to persist as JSON so refs survive across processes (e.g. a proxy writing,
+    an MCP server reading). ``max_entries``/``ttl_seconds`` bound the cache;
+    set ``ttl_seconds=0`` to disable expiry.
     """
 
     path: str | Path | None = None
-    _data: dict[str, str] = field(default_factory=dict, repr=False)
+    max_entries: int = DEFAULT_MAX_ENTRIES
+    ttl_seconds: float = DEFAULT_TTL_SECONDS
+    # ref -> (original, stored_at)
+    _data: OrderedDict[str, tuple[str, float]] = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.path and Path(self.path).exists():
             try:
-                self._data = json.loads(Path(self.path).read_text(encoding="utf-8"))
+                raw = json.loads(Path(self.path).read_text(encoding="utf-8"))
+                now = time.time()
+                # Accept both the current [text, ts] shape and a legacy text-only map.
+                for ref, val in raw.items():
+                    if isinstance(val, list) and len(val) == 2:
+                        self._data[ref] = (val[0], float(val[1]))
+                    else:
+                        self._data[ref] = (val, now)
             except (OSError, ValueError):
-                self._data = {}
+                self._data = OrderedDict()
+
+    def _expired(self, stored_at: float, now: float) -> bool:
+        return self.ttl_seconds > 0 and (now - stored_at) > self.ttl_seconds
 
     def put(self, original: str) -> str:
         """Store ``original`` and return its ref (idempotent by content)."""
         ref = content_ref(original)
+        now = time.time()
         with self._lock:
-            if ref not in self._data:
-                self._data[ref] = original
-                self._flush_locked()
+            self._data[ref] = (original, now)
+            self._data.move_to_end(ref)
+            # Evict expired, then oldest beyond the cap.
+            for k in [k for k, (_, ts) in self._data.items() if self._expired(ts, now)]:
+                del self._data[k]
+            while len(self._data) > self.max_entries:
+                self._data.popitem(last=False)
+            self._flush_locked()
         return ref
 
     def get(self, ref: str) -> str | None:
         ref = ref.strip()
         if ref.startswith(REF_PREFIX):
             ref = ref[len(REF_PREFIX) :]
+        now = time.time()
         with self._lock:
-            return self._data.get(ref)
+            entry = self._data.get(ref)
+            if entry is None:
+                return None
+            original, stored_at = entry
+            if self._expired(stored_at, now):
+                del self._data[ref]
+                self._flush_locked()
+                return None
+            self._data.move_to_end(ref)  # LRU touch
+            return original
 
     def __len__(self) -> int:
         return len(self._data)
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
-            total = sum(len(v) for v in self._data.values())
+            total = sum(len(v) for v, _ in self._data.values())
             return {"entries": len(self._data), "stored_chars": total}
 
     def _flush_locked(self) -> None:
         if self.path:
-            Path(self.path).write_text(json.dumps(self._data), encoding="utf-8")
+            serializable = {ref: [text, ts] for ref, (text, ts) in self._data.items()}
+            Path(self.path).write_text(json.dumps(serializable), encoding="utf-8")
 
 
 # --- module-level default store ---------------------------------------

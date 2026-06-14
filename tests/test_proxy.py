@@ -56,6 +56,18 @@ def test_small_content_untouched():
     assert out["messages"][0]["content"] == "hello"
 
 
+def test_anthropic_system_field_is_compressed():
+    reset_default_store()
+    body = {
+        "model": "claude-sonnet-4-6",
+        "system": _big_json_blob(),
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    out = compress_anthropic_request(body)
+    assert len(out["system"]) < len(_big_json_blob())
+    assert "ref=" in out["system"]
+
+
 def test_extract_openai_retrievals():
     resp = {
         "choices": [

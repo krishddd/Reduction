@@ -36,12 +36,16 @@ def _get_compressor() -> object | None:
     return _compressor or None
 
 
-def compress_documents(documents: list[str], rate: float = 0.5) -> list[str]:
+def compress_documents(
+    documents: list[str], rate: float = 0.5, *, compressor: object | None = None
+) -> list[str]:
     """Compress each context document toward ``rate`` of its original tokens.
 
-    Documents below ``MIN_CHARS_TO_COMPRESS`` pass through untouched.
+    Documents below ``MIN_CHARS_TO_COMPRESS`` pass through untouched. ``compressor``
+    is injectable (anything with ``compress_prompt(text, rate=...) -> {"compressed_prompt": ...}``)
+    so the gate/rate logic is testable without loading LLMLingua.
     """
-    compressor = _get_compressor()
+    compressor = compressor or _get_compressor()
     if not compressor:
         return documents
 

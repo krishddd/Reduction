@@ -163,6 +163,33 @@ def _cmd_wrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    # Offline self-check: a keyword-spotting fake model on synthetic cases shows
+    # whether compression preserves answers. Replace model_fn with a real client
+    # in code for a true eval.
+    from reduction.evals import EvalCase, run_evals
+
+    # A noisy log (logcrush keeps ERROR/FAIL lines + dedups INFO) — compresses
+    # a lot while preserving the one line the question is about.
+    big = "\n".join("2026-01-01 12:00:00 INFO healthcheck ok" for _ in range(300))
+    needle = big + "\n2026-01-01 12:05:00 ERROR FAIL disk full on /var"
+    cases = [
+        EvalCase(
+            name="find-failure",
+            context=needle,
+            question="is there a failure?",
+            check=lambda a: "FAIL" in a,
+        )
+    ]
+
+    def model_fn(context: str, question: str) -> str:
+        return "FAIL present" if "FAIL" in context else "all ok"
+
+    report = run_evals(cases, model_fn)
+    sys.stdout.write(report.render() + "\n")
+    return 0
+
+
 def _cmd_demo(_: argparse.Namespace) -> int:
     opt = TokenOptimizer(OptimizerConfig(output_format="toon"))
     big = '{"items":[' + ",".join(f'{{"id":{i},"ok":true}}' for i in range(100)) + "]}"
@@ -228,6 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("wrap", help="print integration snippet for an agent")
     w.add_argument("agent", choices=list(_WRAP_SNIPPETS))
     w.set_defaults(func=_cmd_wrap)
+
+    ev = sub.add_parser("eval", help="run the offline accuracy self-check")
+    ev.set_defaults(func=_cmd_eval)
 
     d = sub.add_parser("demo", help="compress a sample and show savings")
     d.set_defaults(func=_cmd_demo)

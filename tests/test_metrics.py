@@ -21,8 +21,8 @@ def test_input_savings_tracked():
     m.record_input("x" * 400, "x" * 100, layer="normalize")
     s = m.summary()
     assert s["input_tokens_raw"] > s["input_tokens_optimized"]
-    assert s["tokens_saved"] > 0
-    assert s["savings_pct"] > 0
+    assert s["input_tokens_saved"] > 0
+    assert s["input_savings_pct"] > 0
 
 
 def test_estimate_tokens_nonzero_for_text():
