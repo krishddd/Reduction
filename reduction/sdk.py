@@ -248,6 +248,18 @@ class TokenOptimizer:
             self.metrics.record_input_tokens(raw_tokens, result.tokens_used, layer="contextfit")
         return result.chunks
 
+    def route_effort(self, task: str, *, default: str = "medium"):
+        """Recommend a reasoning-effort level + thinking budget for a task.
+
+        Returns an ``EffortDecision`` exposing ``thinking_budget`` (Anthropic
+        ``budget_tokens``), ``reasoning_effort`` (OpenAI), and
+        ``anthropic_thinking()``. Routine steps route to minimal effort so a long
+        agent loop doesn't burn reasoning tokens on trivial turns.
+        """
+        from reduction.effort import route_effort
+
+        return route_effort(task, default=default)
+
     def _ccr_store(self):
         from reduction.ccr import CompressionStore, get_default_store
 

@@ -251,6 +251,20 @@ hashing embedding otherwise. When `hnswlib` is installed, search uses an ANN
 index (built from SQLite on open, updated on add) for sub-linear lookups;
 otherwise it falls back to an exact cosine scan.
 
+### Effort routing ([reduction/effort.py](reduction/effort.py))
+Extended thinking is the biggest output-side cost in agent loops — a model that
+"thinks" for 8k tokens before reading a file wastes budget. `route_effort`
+classifies a task and recommends a reasoning level plus the concrete provider
+knob: Anthropic `thinking.budget_tokens` (0 = disabled) or OpenAI
+`reasoning_effort`. Routine verbs (read/list/grep) route to minimal; analytical
+verbs (debug/why/design) route to high.
+
+```python
+opt = TokenOptimizer()
+d = opt.route_effort("read config.py")     # -> level="minimal", thinking omitted
+resp = client.messages.create(model="claude-sonnet-4-6", thinking=d.anthropic_thinking(), ...)
+```
+
 ### Failure-learning ([reduction/learn.py](reduction/learn.py))
 Record agent outcomes; recurring failures become corrections written into a
 managed block in `CLAUDE.md` / `AGENTS.md`, so the next run starts smarter.
