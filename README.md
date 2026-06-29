@@ -220,6 +220,21 @@ resp = client.messages.create(model="claude-sonnet-4-6", messages=messages, ...)
 Inspired by [ACON](https://arxiv.org/abs/2510.00615) (context compression for
 long-horizon agents). Off by default; enable globally with `REDUCTION_HISTORY=true`.
 
+### Budget-aware context fitting ([reduction/layers/contextfit.py](reduction/layers/contextfit.py))
+RAG and agent loops assemble more candidate context than is worth sending.
+`fit_context` packs a list of chunks into a fixed token budget: it **scores**
+each chunk for relevance to a query (lexical, length-normalized), **includes**
+them in priority order while they fit, **compresses** (content-aware + CCR) any
+that don't, and **truncates/drops** the rest — reporting exactly what was
+trimmed so a budget-fit context is never mistaken for the full set.
+
+```python
+opt = TokenOptimizer()
+chunks = opt.fit_context(retrieved_docs, token_budget=4000, query=user_question)
+```
+
+Dependency-free analogue of Headroom's score-based context fitting.
+
 ### Persistent vector memory ([reduction/memory.py](reduction/memory.py))
 Per-project SQLite store with semantic search for cross-turn / cross-agent
 recall. Namespaced so projects never bleed into each other.

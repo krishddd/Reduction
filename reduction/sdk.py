@@ -216,6 +216,38 @@ class TokenOptimizer:
             )
         return result.messages
 
+    def fit_context(
+        self,
+        chunks: list[str],
+        *,
+        token_budget: int,
+        query: str | None = None,
+        ccr: bool | None = None,
+    ) -> list[str]:
+        """Pack the most relevant ``chunks`` into ``token_budget``, compressing to fit.
+
+        Scores each chunk against ``query`` (lexical relevance, length-normalized),
+        includes them in priority order while they fit, compresses (content-aware +
+        CCR) any that do not, and truncates/drops the rest. Returns the selected
+        chunks in original order. Savings are recorded under the ``contextfit`` layer.
+        """
+        from reduction.layers import contextfit
+
+        use_ccr = self.config.ccr if ccr is None else ccr
+        from reduction.metrics import estimate_tokens
+
+        raw_tokens = sum(estimate_tokens(c) for c in chunks)
+        result = contextfit.fit_context(
+            chunks,
+            token_budget=token_budget,
+            query=query,
+            ccr=use_ccr,
+            store=self._ccr_store(),
+        )
+        if raw_tokens != result.tokens_used:
+            self.metrics.record_input_tokens(raw_tokens, result.tokens_used, layer="contextfit")
+        return result.chunks
+
     def _ccr_store(self):
         from reduction.ccr import CompressionStore, get_default_store
 
