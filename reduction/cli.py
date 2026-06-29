@@ -4,6 +4,9 @@ Mirrors headroom's top-level UX so the pipeline is usable without writing code:
 
     reduction compress <file>     # compress a file, show savings + CCR ref
     reduction retrieve <ref>      # expand a CCR ref (needs a persisted store)
+    reduction fit <files> --budget N   # pack files into a token budget
+    reduction history <msgs.json>      # compress old turns in a conversation
+    reduction effort <task...>         # recommend a reasoning-effort level
     reduction stats               # token-savings summary (from a metrics file)
     reduction simulate ...        # compounded cost model
     reduction mcp                 # run the MCP server (stdio)
@@ -60,6 +63,60 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     data = json.loads(path.read_text(encoding="utf-8"))
     for key, value in data.items():
         sys.stdout.write(f"{key:>22}: {value}\n")
+    return 0
+
+
+def _cmd_fit(args: argparse.Namespace) -> int:
+    from reduction.ccr import CompressionStore
+    from reduction.layers.contextfit import fit_context
+
+    chunks = [Path(f).read_text(encoding="utf-8", errors="replace") for f in args.files]
+    store = CompressionStore(path=args.store or "reduction-ccr.json")
+    result = fit_context(
+        chunks, token_budget=args.budget, query=args.query, ccr=not args.no_ccr, store=store
+    )
+    sys.stdout.write("\n\n".join(result.chunks) + "\n")
+    sys.stderr.write(
+        f"[fit] {result.included}/{len(chunks)} chunks kept "
+        f"({result.compressed} compressed, {result.dropped} dropped), "
+        f"{result.tokens_used}/{result.token_budget} tok"
+        + (f"  refs={','.join(result.refs)}" if result.refs else "")
+        + "\n"
+    )
+    return 0
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
+    import json
+
+    from reduction.ccr import CompressionStore
+    from reduction.layers.history import compress_history
+
+    messages = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    if not isinstance(messages, list):
+        sys.stderr.write("history expects a JSON array of message objects\n")
+        return 1
+    store = CompressionStore(path=args.store or "reduction-ccr.json")
+    result = compress_history(messages, keep_last=args.keep_last, ccr=not args.no_ccr, store=store)
+    sys.stdout.write(json.dumps(result.messages, indent=2) + "\n")
+    sys.stderr.write(
+        f"[history] {result.messages_compressed} messages compressed, "
+        f"{result.tokens_before} -> {result.tokens_after} tok "
+        f"({result.compression_ratio:.0%} saved)\n"
+    )
+    return 0
+
+
+def _cmd_effort(args: argparse.Namespace) -> int:
+    from reduction.effort import route_effort
+
+    d = route_effort(" ".join(args.task), default=args.default)
+    sys.stdout.write(
+        f"level: {d.level}\n"
+        f"thinking_budget: {d.thinking_budget}\n"
+        f"reasoning_effort: {d.reasoning_effort}\n"
+        f"rationale: {d.rationale}\n"
+    )
     return 0
 
 
@@ -218,6 +275,26 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("stats", help="print a persisted metrics summary")
     s.add_argument("file", nargs="?", default="reduction-metrics.json")
     s.set_defaults(func=_cmd_stats)
+
+    ft = sub.add_parser("fit", help="pack files into a token budget (relevance-scored)")
+    ft.add_argument("files", nargs="+", help="files to treat as context chunks")
+    ft.add_argument("--budget", type=int, required=True, help="token budget to fit within")
+    ft.add_argument("--query", help="optional query to prioritize relevant chunks")
+    ft.add_argument("--store", help="CCR store path (default reduction-ccr.json)")
+    ft.add_argument("--no-ccr", action="store_true", help="disable reversible CCR markers")
+    ft.set_defaults(func=_cmd_fit)
+
+    hist = sub.add_parser("history", help="compress old turns in a JSON messages file")
+    hist.add_argument("file", help="JSON file: an array of {role, content} messages")
+    hist.add_argument("--keep-last", type=int, default=4, help="recent turns kept verbatim")
+    hist.add_argument("--store", help="CCR store path (default reduction-ccr.json)")
+    hist.add_argument("--no-ccr", action="store_true", help="disable reversible CCR markers")
+    hist.set_defaults(func=_cmd_history)
+
+    eff = sub.add_parser("effort", help="recommend a reasoning-effort level for a task")
+    eff.add_argument("task", nargs="+", help="the task description")
+    eff.add_argument("--default", default="medium", choices=["minimal", "low", "medium", "high"])
+    eff.set_defaults(func=_cmd_effort)
 
     sim = sub.add_parser("simulate", help="compounded cost model")
     sim.add_argument("--daily-input-tokens", type=float, default=5_000_000)

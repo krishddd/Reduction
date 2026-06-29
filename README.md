@@ -160,13 +160,18 @@ reduction mcp                       # runs the stdio MCP server
 ```
 
 Exposes `reduction_compress` (content-aware + CCR), `reduction_retrieve`
-(expand a ref), and `reduction_stats` (savings summary).
+(expand a ref), `reduction_compress_history` (shrink old conversation turns),
+`reduction_fit_context` (pack chunks into a token budget), `reduction_route_effort`
+(recommend a thinking budget), and `reduction_stats` (savings summary).
 
 ## Use it — CLI
 
 ```bash
 reduction compress scan.json            # content-aware compress, prints CCR ref
 reduction retrieve 14a9cd0d             # expand a ref back to the original
+reduction fit a.md b.md --budget 4000 --query "deploy"   # pack files into a budget
+reduction history convo.json --keep-last 4               # compress old turns
+reduction effort "debug why latency spiked"              # recommend a thinking budget
 reduction simulate --daily-input-tokens 5000000
 reduction wrap anthropic                # print a copy-paste integration snippet
 reduction demo                          # compress a sample and show savings
