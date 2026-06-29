@@ -31,6 +31,9 @@ class OptimizerConfig:
     # CCR: keep compression reversible (store originals, embed retrieval refs).
     ccr: bool = _flag("REDUCTION_CCR", True)
     ccr_store_path: str | None = os.environ.get("REDUCTION_CCR_STORE")
+    # Conversation-history compression: shrink old turns, keep the last N verbatim.
+    compress_history: bool = _flag("REDUCTION_HISTORY", False)
+    history_keep_last: int = int(os.environ.get("REDUCTION_HISTORY_KEEP_LAST", "4"))
 
     # --- Layer 2: context compression (LLMLingua-2) ---
     compress_context: bool = _flag("REDUCTION_COMPRESS", False)
@@ -67,6 +70,8 @@ class OptimizerConfig:
             raise ValueError(f"compression_rate must be in (0, 1], got {self.compression_rate}")
         if not 0.0 < self.semantic_threshold <= 1.0:
             raise ValueError(f"semantic_threshold must be in (0, 1], got {self.semantic_threshold}")
+        if self.history_keep_last < 0:
+            raise ValueError(f"history_keep_last must be >= 0, got {self.history_keep_last}")
 
     def with_overrides(self, **kwargs: object) -> OptimizerConfig:
         """Return a copy with per-call overrides applied."""

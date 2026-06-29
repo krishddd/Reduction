@@ -202,6 +202,24 @@ eliding bodies (`... (12 lines)`) — the agent sees the shape, retrieves a body
 via CCR when it needs one. tree-sitter (`[code]` extra) for language-exact
 parsing; robust Python/JS/TS/Go/Java/C++/Rust heuristic otherwise.
 
+### Conversation-history compression ([reduction/layers/history.py](reduction/layers/history.py))
+For long-horizon agents the biggest token sink is not any single tool output but
+the **accumulation** of past turns — every tool result, file dump, and log is
+re-sent on every subsequent call. `compress_messages` shrinks the older messages
+(same content-aware compressors as Layer 1, CCR-reversible) while keeping system
+messages and the last `keep_last` turns verbatim, so the model retains full
+recent context and a retrievable history of everything before it. Handles both
+OpenAI string content and Anthropic block content (recursing into `tool_result`).
+
+```python
+opt = TokenOptimizer()
+messages = opt.compress_messages(conversation, keep_last=4)   # old turns shrunk + CCR
+resp = client.messages.create(model="claude-sonnet-4-6", messages=messages, ...)
+```
+
+Inspired by [ACON](https://arxiv.org/abs/2510.00615) (context compression for
+long-horizon agents). Off by default; enable globally with `REDUCTION_HISTORY=true`.
+
 ### Persistent vector memory ([reduction/memory.py](reduction/memory.py))
 Per-project SQLite store with semantic search for cross-turn / cross-agent
 recall. Namespaced so projects never bleed into each other.
@@ -246,6 +264,8 @@ Every knob has an env-var fallback (see [reduction/config.py](reduction/config.p
 | `REDUCTION_CONTENT_ROUTING` | content-aware tool-output compression | `true` |
 | `REDUCTION_CCR` | reversible compression (store + retrieve refs) | `true` |
 | `REDUCTION_CCR_STORE` | path to persist the CCR store as JSON | _(memory)_ |
+| `REDUCTION_HISTORY` | compress old conversation turns (keep recent verbatim) | `false` |
+| `REDUCTION_HISTORY_KEEP_LAST` | turns kept verbatim by history compression | `4` |
 | `REDUCTION_COMPRESS` | LLMLingua-2 (Layer 2) | `false` |
 | `REDUCTION_SEMANTIC_CACHE` | LiteLLM semantic cache (Layer 3) | `false` |
 | `REDUCTION_SEMANTIC_THRESHOLD` | cosine hit threshold | `0.92` |

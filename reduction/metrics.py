@@ -92,6 +92,18 @@ class Metrics:
             if r != o:
                 self.events.append({"kind": "input", "layer": layer, "raw": r, "opt": o})
 
+    def record_input_tokens(self, raw: int, optimized: int, *, layer: str) -> None:
+        """Record an input saving already measured in tokens (not strings).
+
+        Used by layers that compute token counts internally (e.g. history
+        compression aggregates many blocks) so they need not re-serialize.
+        """
+        with self._lock:
+            self.input_tokens_raw += raw
+            self.input_tokens_optimized += optimized
+            if raw != optimized:
+                self.events.append({"kind": "input", "layer": layer, "raw": raw, "opt": optimized})
+
     def record_output(self, tokens: int) -> None:
         """Record observed output tokens (not treated as a saving)."""
         with self._lock:

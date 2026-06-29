@@ -186,6 +186,36 @@ class TokenOptimizer:
         self.metrics.record_input(output, filtered, layer="shell")
         return filtered
 
+    def compress_messages(
+        self,
+        messages: list[Any],
+        *,
+        keep_last: int | None = None,
+        ccr: bool | None = None,
+    ) -> list[Any]:
+        """Compress old turns in a multi-turn message list (keeps recent verbatim).
+
+        The biggest token sink for long-horizon agents is accumulated history:
+        every past tool result re-sent on every call. This compresses messages
+        older than the last ``keep_last`` (content-aware + CCR-reversible),
+        leaving system messages and recent turns untouched. Returns a new list;
+        the input is not mutated. Savings are recorded under the ``history`` layer.
+
+        ``keep_last``/``ccr`` default to the config (``history_keep_last``/``ccr``).
+        """
+        from reduction.layers import history
+
+        kl = self.config.history_keep_last if keep_last is None else keep_last
+        use_ccr = self.config.ccr if ccr is None else ccr
+        result = history.compress_history(
+            messages, keep_last=kl, ccr=use_ccr, store=self._ccr_store()
+        )
+        if result.tokens_before != result.tokens_after:
+            self.metrics.record_input_tokens(
+                result.tokens_before, result.tokens_after, layer="history"
+            )
+        return result.messages
+
     def _ccr_store(self):
         from reduction.ccr import CompressionStore, get_default_store
 
