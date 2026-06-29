@@ -34,7 +34,8 @@ _KEEP_RE = re.compile(
     r"(?:export\s+)?(?:abstract\s+)?class\s|"  # js/ts classes
     r"(?:public|private|protected|static|export|const|let|var)\s|"
     r"interface\s|type\s+\w+\s*=|enum\s|"  # ts types
-    r"#include|using\s+namespace|namespace\s|"  # c/c++
+    r"#include|#define|using\s+namespace|namespace\s|template\s*<|"  # c/c++
+    r"package\s|func\s|"  # go (also matches go's func)
     r"(?:pub\s+)?(?:async\s+)?fn\s|impl\s|struct\s|trait\s|mod\s|use\s"  # rust
     r")"
 )
@@ -42,10 +43,29 @@ _KEEP_RE = re.compile(
 _OPENS_BODY = re.compile(r"[:{]\s*(?://.*)?$")
 _TRIPLE = ('"""', "'''")
 
-# Map a guessed language to the tree-sitter-language-pack name.
+# Map a guessed language to the tree-sitter-language-pack name. Order matters
+# only for ties; the language with the most signature-line hits wins.
 _LANG_HINTS = {
     "python": re.compile(r"^\s*(?:def |class |import |from \S+ import)", re.MULTILINE),
     "rust": re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn |^\s*impl |^\s*use ", re.MULTILINE),
+    "go": re.compile(r"^\s*(?:package |func |import \(|type \w+ struct)", re.MULTILINE),
+    "java": re.compile(
+        r"^\s*(?:public |private |protected )?(?:static |final |abstract )*"
+        r"(?:class |interface |void |[A-Z]\w*(?:<[^>]*>)? \w+\s*\()|^\s*package \w",
+        re.MULTILINE,
+    ),
+    "cpp": re.compile(
+        r"^\s*(?:#include|#define|using namespace|namespace |template\s*<|"
+        r"std::|class \w+\s*[:{])",
+        re.MULTILINE,
+    ),
+    "typescript": re.compile(
+        r"^\s*(?:interface \w|type \w+\s*=|enum \w|"
+        r"(?:export )?(?:abstract )?class \w|\w+\s*:\s*\w+(?:\[\])?\s*[=;,)])",
+        re.MULTILINE,
+    ),
+    # JavaScript last: its signatures (function/const/=>) also appear in TS, so
+    # TS-specific hits above should win when present.
     "javascript": re.compile(r"(?:^|\s)(?:function |const |let |=> )", re.MULTILINE),
 }
 
@@ -166,11 +186,13 @@ def crush_code_treesitter(text: str, language: str) -> tuple[str, bool]:
     tree = parser.parse(data)
     lines = text.split("\n")
 
-    body_types = {"block", "statement_block", "function_body"}
+    body_types = {"block", "statement_block", "function_body", "compound_statement"}
     def_types = {
         "function_definition",
         "function_declaration",
         "method_definition",
+        "method_declaration",  # go / java
+        "constructor_declaration",  # java
         "function_item",
         "class_definition",
         "class_declaration",

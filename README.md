@@ -200,7 +200,7 @@ OPENAI_BASE_URL=https://api.openai.com reduction proxy --port 8788
 `CODE` content keeps imports, decorators, and class/function signatures while
 eliding bodies (`... (12 lines)`) — the agent sees the shape, retrieves a body
 via CCR when it needs one. tree-sitter (`[code]` extra) for language-exact
-parsing; robust Python/JS/Rust heuristic otherwise.
+parsing; robust Python/JS/TS/Go/Java/C++/Rust heuristic otherwise.
 
 ### Persistent vector memory ([reduction/memory.py](reduction/memory.py))
 Per-project SQLite store with semantic search for cross-turn / cross-agent
