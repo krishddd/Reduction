@@ -57,6 +57,8 @@ dev = [
     "pyyaml>=6.0",
     "tiktoken>=0.7",
     "hnswlib>=0.8",   # exercise the ANN search path in CI (light, has wheels)
+    "anthropic>=0.40",  # run the install()/adapter tests in CI (light, no torch)
+    "openai>=1.40",     # run the install()/adapter tests in CI (light, no torch)
 ]
 
 [project.urls]
