@@ -20,6 +20,7 @@ Quick start:
 """
 
 from reduction.config import OptimizerConfig
+from reduction.install import get_optimizer, install, report, uninstall
 from reduction.metrics import Metrics
 from reduction.sdk import OptimizedRequest, TokenOptimizer
 
@@ -30,4 +31,8 @@ __all__ = [
     "OptimizedRequest",
     "OptimizerConfig",
     "Metrics",
+    "install",
+    "uninstall",
+    "report",
+    "get_optimizer",
 ]

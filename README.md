@@ -20,6 +20,31 @@
                               L3 semantic cache wraps the call (optional)
 ```
 
+## Quickstart — one line, zero code change
+
+The fastest way to start saving tokens. Add two lines at startup; **nothing else
+in your code changes.** Every `anthropic` / `openai` client in the process is
+patched in place to route through the pipeline.
+
+```python
+import reduction
+reduction.install()          # the entire integration
+
+# ... your existing code, untouched ...
+import anthropic
+client = anthropic.Anthropic()
+client.messages.create(model="claude-sonnet-4-6", max_tokens=512,
+                       system="You are a planner.", messages=[...])
+
+print(reduction.report())    # token-savings summary
+```
+
+No constructor swap, no base-URL change, no proxy process. `reduction.install()`
+is idempotent and `reduction.uninstall()` restores the original SDKs. Configure
+entirely with env vars (e.g. `REDUCTION_OUTPUT_FORMAT=toon`) — see
+[Configuration](#configuration). Prefer an explicit wrapper or a shared HTTP
+service instead? Those paths are below.
+
 ## The five layers
 
 | # | Layer | Technique | Default | Savings |
