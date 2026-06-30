@@ -31,6 +31,7 @@ def test_report_before_install():
 
 
 def test_install_anthropic_optimizes_system_and_records(monkeypatch):
+    pytest.importorskip("anthropic")
     from anthropic.resources.messages import Messages
 
     captured = {}
@@ -60,6 +61,7 @@ def test_install_anthropic_optimizes_system_and_records(monkeypatch):
 
 
 def test_install_openai_optimizes_messages(monkeypatch):
+    pytest.importorskip("openai")
     from openai.resources.chat.completions import Completions
 
     captured = {}
@@ -90,6 +92,7 @@ def test_install_openai_optimizes_messages(monkeypatch):
 
 
 def test_idempotent_install(monkeypatch):
+    pytest.importorskip("anthropic")
     from anthropic.resources.messages import Messages
 
     monkeypatch.setattr(Messages, "create", lambda self, **kw: _Resp())
@@ -100,6 +103,7 @@ def test_idempotent_install(monkeypatch):
 
 
 def test_uninstall_restores(monkeypatch):
+    pytest.importorskip("anthropic")
     from anthropic.resources.messages import Messages
 
     sentinel = lambda self, **kw: _Resp()  # noqa: E731
@@ -118,6 +122,7 @@ def test_install_returns_shared_optimizer(monkeypatch):
 
 
 def test_install_anthropic_async(monkeypatch):
+    pytest.importorskip("anthropic")
     import asyncio
 
     from anthropic.resources.messages import AsyncMessages
@@ -146,6 +151,7 @@ def test_install_anthropic_async(monkeypatch):
 
 
 def test_install_openai_async(monkeypatch):
+    pytest.importorskip("openai")
     import asyncio
 
     from openai.resources.chat.completions import AsyncCompletions
@@ -172,6 +178,7 @@ def test_install_openai_async(monkeypatch):
 
 
 def test_uninstall_restores_async(monkeypatch):
+    pytest.importorskip("anthropic")
     from anthropic.resources.messages import AsyncMessages
 
     async def sentinel(self, **kw):
