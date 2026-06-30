@@ -23,8 +23,9 @@
 ## Quickstart — one line, zero code change
 
 The fastest way to start saving tokens. Add two lines at startup; **nothing else
-in your code changes.** Every `anthropic` / `openai` client in the process is
-patched in place to route through the pipeline.
+in your code changes.** Every `anthropic` / `openai` client in the process —
+**sync or async** — is patched in place to route through the pipeline. (`reduction
+init` prints this snippet and tells you which SDKs it detects.)
 
 ```python
 import reduction
@@ -192,6 +193,7 @@ Exposes `reduction_compress` (content-aware + CCR), `reduction_retrieve`
 ## Use it — CLI
 
 ```bash
+reduction init                          # print the one-line install snippet + detect SDKs
 reduction compress scan.json            # content-aware compress, prints CCR ref
 reduction retrieve 14a9cd0d             # expand a ref back to the original
 reduction fit a.md b.md --budget 4000 --query "deploy"   # pack files into a budget

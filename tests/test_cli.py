@@ -93,6 +93,14 @@ def test_history_rejects_non_list(tmp_path, capsys):
     assert rc == 1
 
 
+def test_init_command(capsys):
+    rc = main(["init"])
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "reduction.install()" in out.out
+    assert "import reduction" in out.out
+
+
 def test_effort_command(capsys):
     rc = main(["effort", "debug", "why", "the", "deploy", "fails"])
     out = capsys.readouterr().out

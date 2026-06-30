@@ -2,6 +2,7 @@
 
 Mirrors headroom's top-level UX so the pipeline is usable without writing code:
 
+    reduction init                # print the one-line install snippet
     reduction compress <file>     # compress a file, show savings + CCR ref
     reduction retrieve <ref>      # expand a CCR ref (needs a persisted store)
     reduction fit <files> --budget N   # pack files into a token budget
@@ -117,6 +118,32 @@ def _cmd_effort(args: argparse.Namespace) -> int:
         f"reasoning_effort: {d.reasoning_effort}\n"
         f"rationale: {d.rationale}\n"
     )
+    return 0
+
+
+def _cmd_init(_: argparse.Namespace) -> int:
+    snippet = (
+        "# Add these two lines at the top of your app — the whole integration:\n"
+        "import reduction\n"
+        "reduction.install()\n"
+        "\n"
+        "# ...your existing anthropic / openai code is unchanged...\n"
+        "# print(reduction.report())   # token-savings summary\n"
+    )
+    sys.stdout.write(snippet)
+    detected = []
+    for name in ("anthropic", "openai"):
+        try:
+            __import__(name)
+            detected.append(name)
+        except ImportError:
+            pass
+    if detected:
+        sys.stderr.write(f"detected SDK(s): {', '.join(detected)} — install() will patch them\n")
+    else:
+        sys.stderr.write(
+            "no anthropic/openai SDK detected; install one so reduction.install() can patch it\n"
+        )
     return 0
 
 
@@ -275,6 +302,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("stats", help="print a persisted metrics summary")
     s.add_argument("file", nargs="?", default="reduction-metrics.json")
     s.set_defaults(func=_cmd_stats)
+
+    ini = sub.add_parser("init", help="print the one-line install snippet + detect SDKs")
+    ini.set_defaults(func=_cmd_init)
 
     ft = sub.add_parser("fit", help="pack files into a token budget (relevance-scored)")
     ft.add_argument("files", nargs="+", help="files to treat as context chunks")

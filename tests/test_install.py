@@ -115,3 +115,70 @@ def test_install_returns_shared_optimizer(monkeypatch):
     opt = reduction.install()
     assert opt is reduction.get_optimizer()
     assert isinstance(reduction.report(), str)
+
+
+def test_install_anthropic_async(monkeypatch):
+    import asyncio
+
+    from anthropic.resources.messages import AsyncMessages
+
+    captured = {}
+
+    async def fake_create(self, *, model, messages, system=None, **kwargs):
+        captured["system"] = system
+        return _Resp()
+
+    monkeypatch.setattr(AsyncMessages, "create", fake_create)
+    opt = reduction.install(openai=False)
+
+    inst = AsyncMessages.__new__(AsyncMessages)
+    asyncio.run(
+        AsyncMessages.create(
+            inst,
+            model="claude-sonnet-4-6",
+            max_tokens=32,
+            system="You plan.",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+    assert isinstance(captured["system"], list)  # optimized blocks
+    assert opt.report()["calls"] == 1
+
+
+def test_install_openai_async(monkeypatch):
+    import asyncio
+
+    from openai.resources.chat.completions import AsyncCompletions
+
+    captured = {}
+
+    async def fake_create(self, *, messages, model, **kwargs):
+        captured["messages"] = messages
+        return _Resp()
+
+    monkeypatch.setattr(AsyncCompletions, "create", fake_create)
+    opt = reduction.install(anthropic=False)
+
+    inst = AsyncCompletions.__new__(AsyncCompletions)
+    asyncio.run(
+        AsyncCompletions.create(
+            inst,
+            model="gpt-4o",
+            messages=[{"role": "system", "content": "You plan."}],
+        )
+    )
+    assert captured["messages"][0]["content"] != "You plan."  # caveman injected
+    assert opt.report()["calls"] == 1
+
+
+def test_uninstall_restores_async(monkeypatch):
+    from anthropic.resources.messages import AsyncMessages
+
+    async def sentinel(self, **kw):
+        return _Resp()
+
+    monkeypatch.setattr(AsyncMessages, "create", sentinel)
+    reduction.install(openai=False)
+    assert AsyncMessages.create is not sentinel
+    reduction.uninstall()
+    assert AsyncMessages.create is sentinel

@@ -3,7 +3,7 @@
 The adapters in ``reduction.adapters`` still ask you to swap your constructor
 (``OptimizedAnthropic(...)`` instead of ``anthropic.Anthropic(...)``). This is
 the path with *no* code change at all: call ``install()`` once at startup and
-every ``anthropic.Anthropic`` / ``openai.OpenAI`` client in the process — already
+every ``anthropic`` / ``openai`` client in the process — sync *or* async, already
 created or created later — routes through the optimizer.
 
     import reduction
@@ -18,8 +18,10 @@ created or created later — routes through the optimizer.
 
 It works by patching the SDKs' ``create`` methods in place (the same technique
 Instructor uses to add structured output, and observability tools use to trace
-calls). ``uninstall()`` restores the originals. Idempotent: calling ``install()``
-twice is a no-op. Providers whose SDK is not installed are silently skipped.
+calls). Both the sync (``Messages`` / ``Completions``) and async
+(``AsyncMessages`` / ``AsyncCompletions``) clients are covered. ``uninstall()``
+restores the originals. Idempotent; providers whose SDK is not installed are
+silently skipped.
 
 Reduction-specific kwargs (``output_format``, ``caveman_on``) are honored if
 passed but never required; everything else falls back to config / env vars.
@@ -27,6 +29,7 @@ passed but never required; everything else falls back to config / env vars.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from reduction.adapters.anthropic import _split_last_user, _system_to_text
@@ -84,103 +87,149 @@ def uninstall() -> None:
     _active_optimizer = None
 
 
-def _already_patched(method: Any) -> bool:
-    return getattr(method, "_reduction_patched", False)
+# ---- shared transforms ------------------------------------------------
+
+
+def _record(opt: TokenOptimizer, resp: Any) -> None:
+    usage = getattr(resp, "usage", None)
+    if usage is not None:
+        opt.record_usage(usage)
+
+
+def _anthropic_request(
+    opt: TokenOptimizer,
+    messages: list[dict[str, Any]],
+    system: Any,
+    output_format: str | None,
+    caveman_on: bool | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build (optimized system_blocks, final messages) for an Anthropic call."""
+    user_text, prior = _split_last_user(messages)
+    req = opt.prepare(
+        system=_system_to_text(system),
+        user=user_text,
+        output_format=output_format,
+        caveman_on=caveman_on,
+    )
+    return req.system_blocks, prior + req.messages
+
+
+def _openai_messages(
+    opt: TokenOptimizer,
+    messages: list[dict[str, Any]],
+    output_format: str | None,
+    caveman_on: bool | None,
+) -> list[dict[str, Any]]:
+    """Rewrite system/user messages through the optimizer for an OpenAI call."""
+    cfg = opt.config
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        role, content = msg.get("role"), msg.get("content")
+        if role == "system" and isinstance(content, str):
+            out.append(
+                {
+                    "role": "system",
+                    "content": opt.build_system(
+                        content, output_format=output_format, caveman_on=caveman_on
+                    ),
+                }
+            )
+        elif role == "user" and isinstance(content, str):
+            out.append(
+                {
+                    "role": "user",
+                    "content": normalize.normalize(
+                        content, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines
+                    ),
+                }
+            )
+        else:
+            out.append(msg)
+    return out
+
+
+# ---- patchers ---------------------------------------------------------
+
+
+def _patch(cls: type, original: Any, wrapper: Any) -> None:
+    wrapper._reduction_patched = True  # type: ignore[attr-defined]
+    cls.create = wrapper  # type: ignore[attr-defined]
+    _patched.append((cls, "create", original))
+
+
+def _is_patched(cls: type) -> bool:
+    return getattr(getattr(cls, "create", None), "_reduction_patched", False)
 
 
 def _patch_anthropic(opt: TokenOptimizer) -> None:
     try:
-        from anthropic.resources.messages import Messages
+        from anthropic.resources.messages import AsyncMessages, Messages
     except ImportError:
         return
-    if _already_patched(Messages.create):
-        return
-    original = Messages.create
 
-    def create(
-        self: Any,
-        *,
-        model: str,
-        messages: list[dict[str, Any]],
-        system: Any = None,
-        output_format: str | None = None,
-        caveman_on: bool | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        system_text = _system_to_text(system)
-        user_text, prior = _split_last_user(messages)
-        req = opt.prepare(
-            system=system_text,
-            user=user_text,
-            output_format=output_format,
-            caveman_on=caveman_on,
-        )
-        resp = original(
-            self,
-            model=model,
-            system=req.system_blocks,
-            messages=prior + req.messages,
-            **kwargs,
-        )
-        usage = getattr(resp, "usage", None)
-        if usage is not None:
-            opt.record_usage(usage)
-        return resp
+    if not _is_patched(Messages):
+        sync_original = Messages.create
 
-    create._reduction_patched = True  # type: ignore[attr-defined]
-    Messages.create = create  # type: ignore[method-assign]
-    _patched.append((Messages, "create", original))
+        def create(self: Any, *, model: str, messages: list, system: Any = None,
+                   output_format: str | None = None, caveman_on: bool | None = None,
+                   **kwargs: Any) -> Any:  # fmt: skip
+            system_blocks, final = _anthropic_request(
+                opt, messages, system, output_format, caveman_on
+            )
+            resp = sync_original(self, model=model, system=system_blocks, messages=final, **kwargs)
+            _record(opt, resp)
+            return resp
+
+        _patch(Messages, sync_original, create)
+
+    if not _is_patched(AsyncMessages):
+        async_original = AsyncMessages.create
+
+        async def acreate(self: Any, *, model: str, messages: list, system: Any = None,
+                          output_format: str | None = None, caveman_on: bool | None = None,
+                          **kwargs: Any) -> Any:  # fmt: skip
+            system_blocks, final = _anthropic_request(
+                opt, messages, system, output_format, caveman_on
+            )
+            resp = async_original(self, model=model, system=system_blocks, messages=final, **kwargs)
+            if inspect.isawaitable(resp):
+                resp = await resp
+            _record(opt, resp)
+            return resp
+
+        _patch(AsyncMessages, async_original, acreate)
 
 
 def _patch_openai(opt: TokenOptimizer) -> None:
     try:
-        from openai.resources.chat.completions import Completions
+        from openai.resources.chat.completions import AsyncCompletions, Completions
     except ImportError:
         return
-    if _already_patched(Completions.create):
-        return
-    original = Completions.create
-    cfg = opt.config
 
-    def create(
-        self: Any,
-        *,
-        messages: list[dict[str, Any]],
-        model: str,
-        output_format: str | None = None,
-        caveman_on: bool | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        new_messages: list[dict[str, Any]] = []
-        for msg in messages:
-            role, content = msg.get("role"), msg.get("content")
-            if role == "system" and isinstance(content, str):
-                new_messages.append(
-                    {
-                        "role": "system",
-                        "content": opt.build_system(
-                            content, output_format=output_format, caveman_on=caveman_on
-                        ),
-                    }
-                )
-            elif role == "user" and isinstance(content, str):
-                new_messages.append(
-                    {
-                        "role": "user",
-                        "content": normalize.normalize(
-                            content, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines
-                        ),
-                    }
-                )
-            else:
-                new_messages.append(msg)
+    if not _is_patched(Completions):
+        sync_original = Completions.create
 
-        resp = original(self, messages=new_messages, model=model, **kwargs)
-        usage = getattr(resp, "usage", None)
-        if usage is not None:
-            opt.record_usage(usage)
-        return resp
+        def create(self: Any, *, messages: list, model: str,
+                   output_format: str | None = None, caveman_on: bool | None = None,
+                   **kwargs: Any) -> Any:  # fmt: skip
+            new_messages = _openai_messages(opt, messages, output_format, caveman_on)
+            resp = sync_original(self, messages=new_messages, model=model, **kwargs)
+            _record(opt, resp)
+            return resp
 
-    create._reduction_patched = True  # type: ignore[attr-defined]
-    Completions.create = create  # type: ignore[method-assign]
-    _patched.append((Completions, "create", original))
+        _patch(Completions, sync_original, create)
+
+    if not _is_patched(AsyncCompletions):
+        async_original = AsyncCompletions.create
+
+        async def acreate(self: Any, *, messages: list, model: str,
+                          output_format: str | None = None, caveman_on: bool | None = None,
+                          **kwargs: Any) -> Any:  # fmt: skip
+            new_messages = _openai_messages(opt, messages, output_format, caveman_on)
+            resp = async_original(self, messages=new_messages, model=model, **kwargs)
+            if inspect.isawaitable(resp):
+                resp = await resp
+            _record(opt, resp)
+            return resp
+
+        _patch(AsyncCompletions, async_original, acreate)
