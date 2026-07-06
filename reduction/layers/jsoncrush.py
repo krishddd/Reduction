@@ -54,8 +54,9 @@ def crush_json(text: str) -> tuple[str, bool]:
         return compressed, True
 
     # No big array — fall back to compact JSON (drops pretty-print whitespace).
+    # Compaction is lossless, so it is never flagged as lossy (no CCR needed).
     compact = json.dumps(data, separators=(",", ":"))
-    return (compact, True) if len(compact) < len(text) else (text, False)
+    return (compact, False) if len(compact) < len(text) else (text, False)
 
 
 def _crush_array(root: Any, arr: list[Any]) -> str:
@@ -64,6 +65,14 @@ def _crush_array(root: Any, arr: list[Any]) -> str:
     omitted = len(arr) - len(head) - len(tail)
     sample = head + tail
 
+    # Sibling keys of a dict root (counts, ids, status fields) must survive
+    # sampling — only the big array itself is reduced.
+    key = "items"
+    rest: dict[str, Any] | None = None
+    if isinstance(root, dict):
+        key = next((k for k, v in root.items() if v is arr), "items")
+        rest = {k: v for k, v in root.items() if v is not arr} or None
+
     # If the sample is a uniform array of flat dicts, TOON is densest.
     if toon.is_uniform_array(sample):
         body = toon.encode(sample)
@@ -71,16 +80,22 @@ def _crush_array(root: Any, arr: list[Any]) -> str:
             f"# {len(arr)} items total; {omitted} sampled out "
             f"(head {SAMPLE_HEAD} + tail {SAMPLE_TAIL})"
         )
+        lines = []
+        if rest is not None:
+            lines.append(json.dumps(rest, separators=(",", ":")))
+        lines.append(note)
         if isinstance(root, dict):
             # Note which key held the big array.
-            key = next((k for k, v in root.items() if v is arr), "items")
-            return f"{note}\n{key}:\n{body}"
-        return f"{note}\n{body}"
+            lines.append(f"{key}:")
+        lines.append(body)
+        return "\n".join(lines)
 
     # Otherwise emit compact JSON sample with an omission marker.
-    payload = {
+    payload: dict[str, Any] = {
         "_sample_head": head,
         "_omitted": omitted,
         "_sample_tail": tail,
     }
+    if rest is not None:
+        return json.dumps({**rest, key: payload}, separators=(",", ":"))
     return json.dumps(payload, separators=(",", ":"))

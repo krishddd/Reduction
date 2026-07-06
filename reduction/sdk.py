@@ -120,6 +120,13 @@ class TokenOptimizer:
                 self.metrics.record_input(c, nc, layer="normalize")
                 norm_context.append(nc)
             context = norm_context
+            if volatile_context:
+                norm_volatile = []
+                for c in volatile_context:
+                    nc = normalize.normalize(c, strip=cfg.strip_whitespace, dedupe=cfg.dedupe_lines)
+                    self.metrics.record_input(c, nc, layer="normalize")
+                    norm_volatile.append(nc)
+                volatile_context = norm_volatile
             applied.append("normalize")
 
         # Layer 5 (instructions): caveman + format contract.
@@ -403,28 +410,47 @@ def _coerce_scalar(raw: str) -> Any:
         return s
 
 
+_TOON_HEADER = None  # compiled lazily below
+
+
 def _decode_toon(text: str) -> Any:
     """Decode the tabular TOON subset back to JSON-compatible objects.
 
     Handles the uniform-array header form ``name[N]{k1,k2}:`` followed by
-    comma rows, restoring scalar types and unquoting quoted cells. Falls back
-    to returning the raw text for anything it does not recognize.
+    comma rows, restoring scalar types and unquoting quoted cells. The header
+    may appear after a preamble line or inside a ``` code fence (models often
+    wrap output despite instructions); the declared ``[N]`` count, when
+    present, bounds the rows read. Falls back to returning the raw text for
+    anything it does not recognize.
     """
     import csv
     import io
+    import re
+
+    global _TOON_HEADER
+    if _TOON_HEADER is None:
+        _TOON_HEADER = re.compile(r"^\s*[\w.-]*(?:\[(\d+)\])?\{([^}]+)\}:\s*$")
 
     lines = text.split("\n")
-    if not lines:
-        return text
-    header = lines[0].strip()
-    if "{" not in header or "}" not in header or not header.endswith(":"):
-        return text
-    keys = header[header.index("{") + 1 : header.index("}")].split(",")
-    rows = []
-    for line in lines[1:]:
-        if not line.strip():
+    for i, line in enumerate(lines):
+        m = _TOON_HEADER.match(line)
+        if not m:
             continue
-        cells = next(csv.reader(io.StringIO(line.strip())))
-        values = [_coerce_scalar(c) for c in cells]
-        rows.append(dict(zip(keys, values, strict=False)))
-    return rows
+        count = int(m.group(1)) if m.group(1) else None
+        keys = m.group(2).split(",")
+        rows: list[dict] = []
+        for raw in lines[i + 1 :]:
+            s = raw.strip()
+            if not s or s.startswith("```"):
+                if rows:
+                    break
+                continue
+            cells = next(csv.reader(io.StringIO(s)))
+            values = [_coerce_scalar(c) for c in cells]
+            rows.append(dict(zip(keys, values, strict=False)))
+            if count is not None and len(rows) >= count:
+                break
+        if rows:
+            return rows
+        return text
+    return text

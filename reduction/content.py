@@ -27,6 +27,8 @@ from reduction.metrics import estimate_tokens
 MIN_CHARS_TO_COMPRESS = 200
 # Only attach a CCR marker when at least this fraction of tokens was removed.
 CCR_MIN_SAVINGS = 0.25
+# Plain text/markdown longer than this is head+tail elided (CCR-reversible).
+TEXT_MAX_LINES = 200
 
 
 @dataclass
@@ -55,8 +57,16 @@ def _compress_by_type(text: str, ctype: ContentType) -> tuple[str, bool]:
         return logcrush.crush_log(text)
     if ctype is ContentType.CODE:
         return codecrush.crush_code(text)
-    # markdown / text: lossless normalization only (safe, no CCR needed).
-    return normalize(text, strip=True, dedupe=True), False
+    # markdown / text: lossless normalization, then head+tail elision when the
+    # result is still huge — without this, plain-text dumps bypass compression.
+    normalized = normalize(text, strip=True, dedupe=True)
+    lines = normalized.split("\n")
+    if len(lines) > TEXT_MAX_LINES:
+        head = lines[: TEXT_MAX_LINES // 2]
+        tail = lines[-TEXT_MAX_LINES // 2 :]
+        elided = len(lines) - len(head) - len(tail)
+        return "\n".join([*head, f"... ({elided} lines elided) ...", *tail]), True
+    return normalized, False
 
 
 def compress_content(

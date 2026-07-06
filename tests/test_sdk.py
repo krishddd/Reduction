@@ -48,6 +48,27 @@ def test_decode_toon_coerces_scalar_types():
     ]
 
 
+def test_decode_toon_tolerates_fence_and_preamble():
+    opt = TokenOptimizer(OptimizerConfig(output_format="toon"))
+    text = "Here are the results:\n```toon\nitems[2]{id,name}:\n  1,alice\n  2,bob\n```"
+    assert opt.decode_output(text) == [
+        {"id": 1, "name": "alice"},
+        {"id": 2, "name": "bob"},
+    ]
+
+
+def test_decode_toon_respects_declared_count():
+    opt = TokenOptimizer(OptimizerConfig(output_format="toon"))
+    text = "items[1]{id,name}:\n  1,alice\ntrailing prose, not a row"
+    assert opt.decode_output(text) == [{"id": 1, "name": "alice"}]
+
+
+def test_prepare_normalizes_volatile_context():
+    opt = TokenOptimizer(OptimizerConfig(caveman=False, output_format="text"))
+    req = opt.prepare(system="s", user="u", volatile_context=["dup\ndup\ndup"])
+    assert "(x3)" in req.messages[0]["content"]
+
+
 def test_record_usage_counts_cache_reads_both_shapes():
     opt = TokenOptimizer()
     opt.record_usage({"output_tokens": 100, "cache_read_input_tokens": 5000})

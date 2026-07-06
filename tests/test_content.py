@@ -39,6 +39,38 @@ def test_jsoncrush_small_array_untouched_or_compact():
     assert "items total" not in out
 
 
+def test_jsoncrush_preserves_sibling_keys():
+    data = {
+        "scan_id": "abc-123",
+        "total": 100,
+        "items": [{"id": i, "ok": True} for i in range(100)],
+    }
+    out, changed = jsoncrush.crush_json(json.dumps(data))
+    assert changed
+    assert "abc-123" in out
+    assert '"total":100' in out
+
+
+def test_jsoncrush_compaction_is_not_lossy():
+    # Pretty-print -> compact loses no data, so no CCR ref should be attached.
+    data = {"config": {"retries": 3, "timeout": 30}, "note": "x" * 300}
+    result = compress_content(json.dumps(data, indent=2), ccr=True, store=CompressionStore())
+    assert result.ref is None
+    assert json.loads(result.text) == data
+
+
+def test_diffstat_plain_unified_multi_file():
+    diff = (
+        "--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n+line\n+line2\n-old\n"
+        "--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n+x\n"
+    )
+    out, changed = diffstat.crush_diff(diff)
+    assert changed
+    assert "2 files" in out
+    assert "a.py" in out and "b.py" in out
+    assert "+3/-1" in out
+
+
 def test_diffstat_summary():
     diff = (
         "diff --git a/a.py b/a.py\n+++ b/a.py\n+line\n+line2\n-old\n"
@@ -66,6 +98,17 @@ def test_compress_content_attaches_ccr_ref():
     assert result.ref is not None
     assert result.tokens_after < result.tokens_before
     assert store.get(result.ref) == data  # original is recoverable
+
+
+def test_compress_content_elides_huge_plain_text():
+    store = CompressionStore()
+    text = "\n".join(f"unique plain sentence number {i}" for i in range(1000))
+    result = compress_content(text, ccr=True, store=store)
+    assert result.content_type is ContentType.TEXT
+    assert "lines elided" in result.text
+    assert result.tokens_after < result.tokens_before
+    assert result.ref is not None
+    assert store.get(result.ref) == text  # elided lines stay retrievable
 
 
 def test_compress_content_skips_tiny_input():

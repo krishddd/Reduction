@@ -43,6 +43,12 @@ def crush_diff(text: str) -> tuple[str, bool]:
             current = m.group(2)
         elif m2 and current is None:
             current = m2.group(1)
+        elif m2 and (adds or dels):
+            # Plain unified diff (no ``diff --git`` headers): a new ``+++`` after
+            # counted changes starts the next file. In a git diff the ``+++``
+            # follows its header before any counts, so this never double-fires.
+            flush()
+            current = m2.group(1)
         elif line.startswith("+") and not line.startswith("+++"):
             adds += 1
         elif line.startswith("-") and not line.startswith("---"):
