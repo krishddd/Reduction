@@ -168,9 +168,14 @@ class TokenOptimizer:
         if not self.config.shell_filter:
             return output
 
-        # Prefer zap when a command is known and the binary is installed — it is
-        # structure-aware per command. zap is the *command-wrapping* path.
-        if command and shell.zap_available(self.config.zap_binary):
+        # Prefer zap when a command is known, safe to re-execute (read-only
+        # allowlist — zap re-runs the command), and the binary is installed.
+        # Commands with side effects route to content compression instead.
+        if (
+            command
+            and shell.is_safe_to_rerun(command)
+            and shell.zap_available(self.config.zap_binary)
+        ):
             filtered = shell.filter_tool_output(
                 output,
                 command=command,
@@ -284,6 +289,50 @@ class TokenOptimizer:
     def retrieve(self, ref: str) -> str | None:
         """Expand a CCR ref back to its original content (None if unknown)."""
         return self._ccr_store().get(ref)
+
+    # ---- Layer 3: in-process semantic cache -----------------------------
+
+    def semantic_lookup(self, prompt: str) -> str | None:
+        """Return a cached response for a semantically similar prompt, or None.
+
+        No-op (always None) unless ``config.semantic_cache`` is on. A hit is
+        recorded in the metrics — it skips an entire generation.
+        """
+        if not self.config.semantic_cache:
+            return None
+        hit = self._semantic_cache().get(prompt)
+        if hit is not None:
+            self.metrics.record_semantic_hit()
+        return hit
+
+    def semantic_store(self, prompt: str, response: str) -> None:
+        """Cache ``response`` under ``prompt`` for future semantic lookups."""
+        if not self.config.semantic_cache:
+            return
+        self._semantic_cache().put(prompt, response)
+
+    def cached_call(self, prompt: str, generate: Any) -> str:
+        """Wrap a generation with the semantic cache: a hit skips ``generate``.
+
+            text = opt.cached_call(user_msg, lambda: call_model(user_msg))
+
+        With ``semantic_cache`` off this just calls ``generate()``.
+        """
+        hit = self.semantic_lookup(prompt)
+        if hit is not None:
+            return hit
+        response = generate()
+        self.semantic_store(prompt, response)
+        return response
+
+    def _semantic_cache(self):
+        cache = getattr(self, "_semantic_cache_obj", None)
+        if cache is None:
+            from reduction.layers.semantic_cache import LocalSemanticCache
+
+            cache = LocalSemanticCache(threshold=self.config.semantic_threshold)
+            self._semantic_cache_obj = cache
+        return cache
 
     # ---- outputs ------------------------------------------------------
 

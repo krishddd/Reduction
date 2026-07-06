@@ -35,6 +35,11 @@ _CODE_RE = re.compile(
 _MD_RE = re.compile(r"^(#{1,6} |\s*[-*] |\d+\. |```)", re.MULTILINE)
 
 
+# JSON-ish opener followed by an object/array/string/number start — used to
+# catch *truncated* JSON (common in captured tool output) that fails to parse.
+_TRUNCATED_JSON_RE = re.compile(r'^[\[{]\s*["{\[\d-]')
+
+
 def _looks_like_json(text: str) -> bool:
     s = text.strip()
     if not s or s[0] not in "{[":
@@ -43,7 +48,10 @@ def _looks_like_json(text: str) -> bool:
         json.loads(s)
         return True
     except ValueError:
-        return False
+        # Truncated JSON: right shape at the start, a quoted key/value early
+        # on. The JSON compressor recovers the longest complete prefix; if it
+        # cannot, the content router falls back to the text path.
+        return bool(_TRUNCATED_JSON_RE.match(s)) and '"' in s[:200]
 
 
 def detect(text: str) -> ContentType:

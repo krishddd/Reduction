@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -47,31 +48,61 @@ class CompressionStore:
     """Stores originals so compressed content stays reversible.
 
     In-memory by default with LRU + TTL eviction so it can't leak. Pass ``path``
-    to persist as JSON so refs survive across processes (e.g. a proxy writing,
-    an MCP server reading). ``max_entries``/``ttl_seconds`` bound the cache;
-    set ``ttl_seconds=0`` to disable expiry.
+    to persist in SQLite (WAL) so refs survive across processes (e.g. a proxy
+    writing, an MCP server reading) — puts are O(1), unlike a rewrite-the-file
+    JSON store. A legacy JSON store at ``path`` is migrated in place on open.
+    ``max_entries``/``ttl_seconds`` bound the cache; set ``ttl_seconds=0`` to
+    disable expiry.
     """
 
     path: str | Path | None = None
     max_entries: int = DEFAULT_MAX_ENTRIES
     ttl_seconds: float = DEFAULT_TTL_SECONDS
-    # ref -> (original, stored_at)
+    # ref -> (original, stored_at) — in-memory backend only.
     _data: OrderedDict[str, tuple[str, float]] = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.path and Path(self.path).exists():
+        self._conn: sqlite3.Connection | None = None
+        if self.path:
+            self._conn = self._open_db(Path(self.path))
+
+    def _open_db(self, path: Path) -> sqlite3.Connection:
+        legacy: dict | None = None
+        if path.exists():
             try:
-                raw = json.loads(Path(self.path).read_text(encoding="utf-8"))
-                now = time.time()
-                # Accept both the current [text, ts] shape and a legacy text-only map.
-                for ref, val in raw.items():
-                    if isinstance(val, list) and len(val) == 2:
-                        self._data[ref] = (val[0], float(val[1]))
-                    else:
-                        self._data[ref] = (val, now)
-            except (OSError, ValueError):
-                self._data = OrderedDict()
+                head = path.read_bytes()[:1]
+            except OSError:
+                head = b""
+            if head == b"{":  # legacy JSON store — migrate its entries
+                try:
+                    legacy = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    legacy = None
+                path.unlink()
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        # ``seq`` is a monotonically increasing access counter — LRU ordering
+        # that never ties (wall-clock timestamps can, on coarse clocks).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ccr ("
+            "ref TEXT PRIMARY KEY, text TEXT, stored_at REAL, seq INTEGER)"
+        )
+        if legacy:
+            now = time.time()
+            for ref, val in legacy.items():
+                # Both the [text, ts] shape and the older text-only map.
+                if isinstance(val, list) and len(val) == 2:
+                    text, ts = val[0], float(val[1])
+                else:
+                    text, ts = val, now
+                conn.execute(
+                    "INSERT OR REPLACE INTO ccr "
+                    "VALUES (?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM ccr))",
+                    (ref, text, ts),
+                )
+        conn.commit()
+        return conn
 
     def _expired(self, stored_at: float, now: float) -> bool:
         return self.ttl_seconds > 0 and (now - stored_at) > self.ttl_seconds
@@ -81,6 +112,23 @@ class CompressionStore:
         ref = content_ref(original)
         now = time.time()
         with self._lock:
+            if self._conn is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO ccr "
+                    "VALUES (?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM ccr))",
+                    (ref, original, now),
+                )
+                if self.ttl_seconds > 0:
+                    self._conn.execute(
+                        "DELETE FROM ccr WHERE stored_at < ?", (now - self.ttl_seconds,)
+                    )
+                self._conn.execute(
+                    "DELETE FROM ccr WHERE ref NOT IN "
+                    "(SELECT ref FROM ccr ORDER BY seq DESC LIMIT ?)",
+                    (self.max_entries,),
+                )
+                self._conn.commit()
+                return ref
             self._data[ref] = (original, now)
             self._data.move_to_end(ref)
             # Evict expired, then oldest beyond the cap.
@@ -88,7 +136,6 @@ class CompressionStore:
                 del self._data[k]
             while len(self._data) > self.max_entries:
                 self._data.popitem(last=False)
-            self._flush_locked()
         return ref
 
     def get(self, ref: str) -> str | None:
@@ -97,29 +144,48 @@ class CompressionStore:
             ref = ref[len(REF_PREFIX) :]
         now = time.time()
         with self._lock:
+            if self._conn is not None:
+                row = self._conn.execute(
+                    "SELECT text, stored_at FROM ccr WHERE ref=?", (ref,)
+                ).fetchone()
+                if row is None:
+                    return None
+                original, stored_at = row
+                if self._expired(stored_at, now):
+                    self._conn.execute("DELETE FROM ccr WHERE ref=?", (ref,))
+                    self._conn.commit()
+                    return None
+                self._conn.execute(
+                    "UPDATE ccr SET seq=(SELECT MAX(seq)+1 FROM ccr) WHERE ref=?", (ref,)
+                )  # LRU touch
+                self._conn.commit()
+                return original
             entry = self._data.get(ref)
             if entry is None:
                 return None
             original, stored_at = entry
             if self._expired(stored_at, now):
                 del self._data[ref]
-                self._flush_locked()
                 return None
             self._data.move_to_end(ref)  # LRU touch
             return original
 
     def __len__(self) -> int:
+        if self._conn is not None:
+            with self._lock:
+                (n,) = self._conn.execute("SELECT COUNT(*) FROM ccr").fetchone()
+            return int(n)
         return len(self._data)
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
+            if self._conn is not None:
+                n, total = self._conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(text)), 0) FROM ccr"
+                ).fetchone()
+                return {"entries": int(n), "stored_chars": int(total)}
             total = sum(len(v) for v, _ in self._data.values())
             return {"entries": len(self._data), "stored_chars": total}
-
-    def _flush_locked(self) -> None:
-        if self.path:
-            serializable = {ref: [text, ts] for ref, (text, ts) in self._data.items()}
-            Path(self.path).write_text(json.dumps(serializable), encoding="utf-8")
 
 
 # --- module-level default store ---------------------------------------

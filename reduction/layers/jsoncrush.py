@@ -42,24 +42,95 @@ def _largest_array(data: Any) -> list[Any] | None:
 
 
 def crush_json(text: str) -> tuple[str, bool]:
-    """Compress a JSON string. Returns (compressed, was_compressed)."""
-    try:
-        data = json.loads(text)
-    except ValueError:
+    """Compress a JSON string. Returns (compressed, was_lossy).
+
+    Truncated JSON (a captured tool output cut off mid-stream) is recovered by
+    parsing the longest complete prefix — the result is flagged lossy so CCR
+    keeps the raw original retrievable.
+    """
+    data, repaired = _parse_lenient(text)
+    if data is None:
         return text, False
 
     arr = _largest_array(data)
     if arr is not None and len(arr) >= SAMPLE_THRESHOLD:
-        compressed = _crush_array(data, arr)
+        compressed = _crush_array(data, arr, truncated=repaired)
         return compressed, True
+
+    compact = json.dumps(data, separators=(",", ":"))
+    if repaired:
+        # The tail was cut off mid-value; the complete prefix is lossy.
+        return f"# truncated JSON; complete prefix follows\n{compact}", True
 
     # No big array — fall back to compact JSON (drops pretty-print whitespace).
     # Compaction is lossless, so it is never flagged as lossy (no CCR needed).
-    compact = json.dumps(data, separators=(",", ":"))
     return (compact, False) if len(compact) < len(text) else (text, False)
 
 
-def _crush_array(root: Any, arr: list[Any]) -> str:
+def _parse_lenient(text: str) -> tuple[Any, bool]:
+    """Parse JSON, recovering the longest complete prefix of truncated input.
+
+    Returns ``(data, was_repaired)``; ``(None, False)`` when unrecoverable.
+    """
+    try:
+        return json.loads(text), False
+    except ValueError:
+        pass
+    repaired = _repair_truncated(text)
+    return repaired, repaired is not None
+
+
+def _repair_truncated(text: str, max_attempts: int = 40) -> Any:
+    """Recover truncated JSON by closing brackets at the last complete value.
+
+    One pass tracks bracket/string state, remembering it at the trailing
+    structural characters (``"`` close, ``}``, ``]``, ``,``); each candidate cut
+    point is then tried newest-first with the matching closers appended.
+    """
+    from collections import deque
+
+    s = text.strip()
+    if not s or s[0] not in "{[":
+        return None
+
+    states: deque[tuple[int, tuple[str, ...]]] = deque(maxlen=max_attempts)
+    stack: list[str] = []
+    in_str = esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+                states.append((i, tuple(stack)))
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if not stack or stack[-1] != ch:
+                return None  # mismatched brackets — not truncation, not JSON
+            stack.pop()
+            states.append((i, tuple(stack)))
+        elif ch == ",":
+            states.append((i, tuple(stack)))
+
+    for pos, st in reversed(states):
+        # Cutting at a trailing comma leaves the bracket state unchanged.
+        prefix = s[: pos + 1].rstrip().rstrip(",")
+        try:
+            return json.loads(prefix + "".join(reversed(st)))
+        except ValueError:
+            continue
+    return None
+
+
+def _crush_array(root: Any, arr: list[Any], *, truncated: bool = False) -> str:
     head = arr[:SAMPLE_HEAD]
     tail = arr[-SAMPLE_TAIL:]
     omitted = len(arr) - len(head) - len(tail)
@@ -80,6 +151,8 @@ def _crush_array(root: Any, arr: list[Any]) -> str:
             f"# {len(arr)} items total; {omitted} sampled out "
             f"(head {SAMPLE_HEAD} + tail {SAMPLE_TAIL})"
         )
+        if truncated:
+            note += "; input was truncated JSON"
         lines = []
         if rest is not None:
             lines.append(json.dumps(rest, separators=(",", ":")))

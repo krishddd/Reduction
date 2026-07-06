@@ -50,6 +50,38 @@ def test_persist_roundtrips_with_timestamps(tmp_path):
     assert s2.get(ref) == "durable original"
 
 
+def test_legacy_json_store_migrates_to_sqlite(tmp_path):
+    import json
+    import time
+
+    path = tmp_path / "ccr.json"
+    original = "legacy stored content"
+    ref = ccr.content_ref(original)
+    path.write_text(json.dumps({ref: [original, time.time()]}), encoding="utf-8")
+    store = CompressionStore(path=path)
+    assert store.get(ref) == original
+    # The file is now a SQLite database, not JSON.
+    assert path.read_bytes()[:6] == b"SQLite"
+
+
+def test_persistent_store_caps_entries(tmp_path):
+    store = CompressionStore(path=tmp_path / "ccr.db", max_entries=3, ttl_seconds=0)
+    refs = [store.put(f"payload number {i}") for i in range(5)]
+    assert len(store) == 3
+    assert store.get(refs[0]) is None
+    assert store.get(refs[4]) == "payload number 4"
+
+
+def test_persistent_store_lru_touch_on_get(tmp_path):
+    store = CompressionStore(path=tmp_path / "ccr.db", max_entries=3, ttl_seconds=0)
+    a = store.put("aaaa")
+    store.put("bbbb")
+    store.put("cccc")
+    assert store.get(a) == "aaaa"  # touch a -> most-recently-used
+    store.put("dddd")  # evicts the now-oldest (bbbb), not a
+    assert store.get(a) == "aaaa"
+
+
 def test_store_persists_across_instances(tmp_path):
     path = tmp_path / "ccr.json"
     s1 = CompressionStore(path=path)

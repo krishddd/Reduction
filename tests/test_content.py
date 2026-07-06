@@ -59,6 +59,38 @@ def test_jsoncrush_compaction_is_not_lossy():
     assert json.loads(result.text) == data
 
 
+def test_detect_truncated_json():
+    full = json.dumps({"items": [{"id": i, "name": f"row {i}"} for i in range(50)]})
+    truncated = full[: len(full) // 2]  # cut mid-stream, no longer parses
+    assert detect(truncated) is ContentType.JSON
+
+
+def test_jsoncrush_recovers_truncated_json():
+    full = json.dumps({"items": [{"id": i, "ok": True} for i in range(100)]})
+    truncated = full[: int(len(full) * 0.7)]
+    out, lossy = jsoncrush.crush_json(truncated)
+    assert lossy
+    assert "items total" in out
+    assert "truncated" in out
+
+
+def test_jsoncrush_truncated_small_object_flagged_lossy():
+    text = '{"status":"ok","count":42,"detail":"partial va'
+    out, lossy = jsoncrush.crush_json(text)
+    assert lossy
+    assert '"count":42' in out
+
+
+def test_compress_content_truncated_json_keeps_original_via_ccr():
+    store = CompressionStore()
+    full = json.dumps({"items": [{"id": i, "name": f"row {i}"} for i in range(200)]})
+    truncated = full[: int(len(full) * 0.6)]
+    result = compress_content(truncated, ccr=True, store=store)
+    assert result.content_type is ContentType.JSON
+    assert result.ref is not None
+    assert store.get(result.ref) == truncated  # raw capture stays retrievable
+
+
 def test_diffstat_plain_unified_multi_file():
     diff = (
         "--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n+line\n+line2\n-old\n"

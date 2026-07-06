@@ -52,7 +52,7 @@ service instead? Those paths are below.
 |---|-------|-----------|---------|---------|
 | 1 | Shell | content-aware tool-output compression (JSON/diff/log routing) + reversible CCR; [zap](https://github.com/rtk-ai/rtk)/RTK or heuristic fallback | on | 60–97% on tool output |
 | 2 | Context | [LLMLingua-2](https://arxiv.org/abs/2403.12968) compresses retrieved docs (never instructions) | off* | 2–5× on context |
-| 3 | Cache | [LiteLLM semantic cache](https://docs.litellm.ai/docs/proxy/caching) (Redis VSS / Qdrant) | off* | skips generation on hit |
+| 3 | Cache | in-process `LocalSemanticCache` (SDK) or [LiteLLM semantic cache](https://docs.litellm.ai/docs/proxy/caching) (gateway, Redis VSS / Qdrant) | off* | skips generation on hit |
 | 4 | Provider | [Native prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) via stable-prefix ordering + `cache_control` | on | 90% input discount (Anthropic) |
 | 5 | Output | Caveman persona + [TOON](https://github.com/toon-format/toon)/YAML serialization | on | ~45% output; 30–60% structured |
 
@@ -267,6 +267,29 @@ chunks = opt.fit_context(retrieved_docs, token_budget=4000, query=user_question)
 
 Dependency-free analogue of Headroom's score-based context fitting.
 
+### In-process semantic cache ([reduction/layers/semantic_cache.py](reduction/layers/semantic_cache.py))
+Layer 3 without infrastructure: a prompt semantically close to a previous one
+(cosine ≥ `REDUCTION_SEMANTIC_THRESHOLD`) returns the cached response and
+skips the generation entirely. Embeddings use sentence-transformers when the
+`[memory]` extra is installed, else a dependency-free hashing embedding
+(lexical overlap — near-duplicate prompts hit, true paraphrases may not).
+Hits are counted in the metrics (`semantic_cache_hits`).
+
+```python
+opt = TokenOptimizer(OptimizerConfig(semantic_cache=True))
+text = opt.cached_call(user_msg, lambda: call_model(user_msg))  # hit skips the call
+```
+
+For a shared cross-process cache, the gateway's LiteLLM redis-semantic backend
+(`configure_cache`) does the same against Redis VSS / Qdrant.
+
+### Truncated-JSON recovery ([reduction/layers/jsoncrush.py](reduction/layers/jsoncrush.py))
+Captured tool output is often JSON cut off mid-stream, which fails to parse.
+The detector still classifies it as JSON and the compressor recovers the
+longest complete prefix (closing brackets at the last complete value), samples
+it as usual, and flags the result lossy so the raw capture stays retrievable
+via CCR. Unrecoverable JSON-ish text falls back to the text path.
+
 ### Persistent vector memory ([reduction/memory.py](reduction/memory.py))
 Per-project SQLite store with semantic search for cross-turn / cross-agent
 recall. Namespaced so projects never bleed into each other.
@@ -390,7 +413,13 @@ the compression is too aggressive for that content.
   back automatically.
 - Caveman output reads as terse — restrict it to machine/tool legs.
 - CCR refs in an in-memory store don't survive a restart — set
-  `REDUCTION_CCR_STORE` to a file path if a later process must retrieve them.
+  `REDUCTION_CCR_STORE` to a file path (SQLite-backed, O(1) puts; a legacy
+  JSON store at that path is migrated in place) if a later process must
+  retrieve them.
+- Tool output is only re-run through zap for a read-only allowlist of
+  commands (`git status`/`log`/`diff`, `ls`, `grep`, ...). Commands with side
+  effects are never re-executed; their captured output goes through
+  content-aware compression instead.
 
 ## Credits
 

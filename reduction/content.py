@@ -48,17 +48,9 @@ class CompressionResult:
         return self.tokens_saved / self.tokens_before if self.tokens_before else 0.0
 
 
-def _compress_by_type(text: str, ctype: ContentType) -> tuple[str, bool]:
-    if ctype is ContentType.JSON:
-        return jsoncrush.crush_json(text)
-    if ctype is ContentType.DIFF:
-        return diffstat.crush_diff(text)
-    if ctype is ContentType.LOG:
-        return logcrush.crush_log(text)
-    if ctype is ContentType.CODE:
-        return codecrush.crush_code(text)
-    # markdown / text: lossless normalization, then head+tail elision when the
-    # result is still huge — without this, plain-text dumps bypass compression.
+def _crush_text(text: str) -> tuple[str, bool]:
+    # Lossless normalization, then head+tail elision when the result is still
+    # huge — without this, plain-text dumps bypass compression.
     normalized = normalize(text, strip=True, dedupe=True)
     lines = normalized.split("\n")
     if len(lines) > TEXT_MAX_LINES:
@@ -67,6 +59,22 @@ def _compress_by_type(text: str, ctype: ContentType) -> tuple[str, bool]:
         elided = len(lines) - len(head) - len(tail)
         return "\n".join([*head, f"... ({elided} lines elided) ...", *tail]), True
     return normalized, False
+
+
+def _compress_by_type(text: str, ctype: ContentType) -> tuple[str, bool]:
+    if ctype is ContentType.JSON:
+        crushed, lossy = jsoncrush.crush_json(text)
+        if lossy or crushed != text:
+            return crushed, lossy
+        # JSON-ish but unrecoverable (e.g. badly truncated) — text path.
+        return _crush_text(text)
+    if ctype is ContentType.DIFF:
+        return diffstat.crush_diff(text)
+    if ctype is ContentType.LOG:
+        return logcrush.crush_log(text)
+    if ctype is ContentType.CODE:
+        return codecrush.crush_code(text)
+    return _crush_text(text)
 
 
 def compress_content(

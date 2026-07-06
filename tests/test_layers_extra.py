@@ -47,6 +47,34 @@ def test_build_cache_params_shape():
     assert params["redis_semantic_cache_embedding_model"] == "text-embedding-3-small"
 
 
+# --- L3: in-process semantic cache ---
+
+
+def test_local_semantic_cache_exact_and_reordered_hit():
+    cache = semantic_cache.LocalSemanticCache(threshold=0.92)
+    cache.put("list the failing tests now", "3 tests failing")
+    assert cache.get("list the failing tests now") == "3 tests failing"
+    # Same tokens, different order — hashing embedding is order-insensitive.
+    assert cache.get("now list the failing tests") == "3 tests failing"
+    assert cache.hits == 2
+
+
+def test_local_semantic_cache_misses_below_threshold():
+    cache = semantic_cache.LocalSemanticCache(threshold=0.92)
+    cache.put("summarize the deploy runbook", "runbook summary")
+    assert cache.get("what is the capital of France") is None
+    assert cache.misses == 1
+
+
+def test_local_semantic_cache_evicts_beyond_cap():
+    cache = semantic_cache.LocalSemanticCache(threshold=0.99, max_entries=2)
+    cache.put("alpha unique prompt", "a")
+    cache.put("beta unique prompt", "b")
+    cache.put("gamma unique prompt", "c")
+    assert len(cache) == 2
+    assert cache.get("alpha unique prompt") is None
+
+
 # --- codecrush: docstring safety ---
 
 

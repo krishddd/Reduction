@@ -69,6 +69,34 @@ def test_prepare_normalizes_volatile_context():
     assert "(x3)" in req.messages[0]["content"]
 
 
+def test_cached_call_skips_generation_on_semantic_hit():
+    opt = TokenOptimizer(OptimizerConfig(semantic_cache=True))
+    calls = []
+
+    def generate():
+        calls.append(1)
+        return "the answer"
+
+    assert opt.cached_call("what failed in the deploy", generate) == "the answer"
+    assert opt.cached_call("what failed in the deploy", generate) == "the answer"
+    assert len(calls) == 1  # second call served from the semantic cache
+    assert opt.report()["semantic_cache_hits"] == 1
+
+
+def test_semantic_cache_off_is_passthrough():
+    opt = TokenOptimizer(OptimizerConfig(semantic_cache=False))
+    calls = []
+
+    def generate():
+        calls.append(1)
+        return "x"
+
+    opt.cached_call("same prompt", generate)
+    opt.cached_call("same prompt", generate)
+    assert len(calls) == 2
+    assert opt.semantic_lookup("same prompt") is None
+
+
 def test_record_usage_counts_cache_reads_both_shapes():
     opt = TokenOptimizer()
     opt.record_usage({"output_tokens": 100, "cache_read_input_tokens": 5000})

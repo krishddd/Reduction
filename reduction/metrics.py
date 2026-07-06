@@ -77,6 +77,7 @@ class Metrics:
     billed_input_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    semantic_cache_hits: int = 0  # each hit skipped an entire generation
     events: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -108,6 +109,11 @@ class Metrics:
         """Record observed output tokens (not treated as a saving)."""
         with self._lock:
             self.output_tokens += tokens
+
+    def record_semantic_hit(self) -> None:
+        """Record a semantic-cache hit (a skipped generation)."""
+        with self._lock:
+            self.semantic_cache_hits += 1
 
     def record_call(
         self,
@@ -141,6 +147,7 @@ class Metrics:
             "billed_input_tokens": self.billed_input_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_write_tokens": self.cache_write_tokens,
+            "semantic_cache_hits": self.semantic_cache_hits,
         }
 
     def render(self) -> str:
@@ -158,6 +165,7 @@ class Metrics:
             f"Input saved:      {s['input_tokens_saved']:>12,} ({pct}%)\n"
             f"Output (observed):{s['output_tokens_observed']:>12,}\n"
             f"Native cache rd:  {s['cache_read_tokens']:>12,}\n"
+            f"Semantic hits:    {s['semantic_cache_hits']:>12,}\n"
             f"Efficiency: {bar} {pct}%  (output/accuracy: see reduction.evals)"
         )
 
