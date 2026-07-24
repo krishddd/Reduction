@@ -7,18 +7,60 @@
 > in-process SDK, zero-touch client adapters, an **MCP server**, a CLI, or a
 > shared HTTP gateway.
 
+```mermaid
+flowchart LR
+    subgraph inputs [Inputs]
+        TOOL[tool / command output]
+        CTX[context docs]
+        USER[user turn]
+        SYS[system prompt]
+    end
+
+    subgraph pipeline ["Reduction pipeline — prepare()"]
+        L1["L1 · shell filter<br/>content-aware routing<br/>(JSON/diff/log/code)"]
+        L2["L2 · LLMLingua-2<br/>context compress<br/>(optional)"]
+        NORM["normalize<br/>whitespace + dedupe"]
+        L5IN["L5 · caveman +<br/>TOON/YAML contract"]
+        L4["L4 · stable-prefix ordering<br/>+ cache_control breakpoint"]
+    end
+
+    L3{{"L3 · semantic cache<br/>hit? skip generation<br/>(optional)"}}
+    PROVIDER[[Provider<br/>Anthropic / OpenAI]]
+
+    subgraph outputs [Outputs]
+        L5OUT["L5 · decode<br/>TOON/YAML → objects"]
+        METRICS[(metrics<br/>+ savings)]
+    end
+
+    CCR[("CCR store<br/>originals by ref<br/>reduction_retrieve")]
+
+    TOOL --> L1
+    CTX --> L2
+    USER --> NORM
+    SYS --> L5IN
+
+    L1 --> NORM
+    L2 --> NORM
+    NORM --> L4
+    L5IN --> L4
+
+    L1 -. store originals .-> CCR
+    L2 -. store originals .-> CCR
+
+    L4 --> L3
+    L3 -- miss --> PROVIDER
+    L3 -- hit --> L5OUT
+    PROVIDER --> L5OUT
+    L5OUT --> METRICS
+    CCR -. retrieve on demand .-> PROVIDER
+
+    classDef opt stroke-dasharray: 4 4;
+    class L2,L3 opt;
 ```
-            ┌──────────────────────────── your agent ────────────────────────────┐
- tool /     │                                                                     │
- command ──▶│  L1 shell filter ─┐                                                 │
- output     │                   │   prepare()                                     │
-            │  context docs ────┼─▶ L2 compress ─▶ L4 stable-prefix + cache_ctrl  │──▶ provider
- user turn ─┼─▶ normalize ──────┘   L5 caveman + TOON contract                    │
-            │                                                                     │
-            │  response ──▶ L5 decode (TOON/YAML→objects) ──▶ metrics             │◀── provider
-            └─────────────────────────────────────────────────────────────────────┘
-                              L3 semantic cache wraps the call (optional)
-```
+
+Entry points into this pipeline: in-process **SDK** (`TokenOptimizer`),
+zero-touch **client adapters**, `reduction.install()`, an **MCP server**, a
+**CLI**, an OpenAI/Anthropic-compatible **proxy**, and a shared **HTTP gateway**.
 
 ## Quickstart — one line, zero code change
 
